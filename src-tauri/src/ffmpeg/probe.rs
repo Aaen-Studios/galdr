@@ -5,7 +5,8 @@ use crate::models::MediaInfo;
 use crate::models::StreamInfo;
 
 pub fn probe_file(path: &Path) -> Result<MediaInfo, String> {
-    let output = Command::new("ffprobe")
+    let ffprobe = crate::ffmpeg::ffprobe_path();
+    let output = Command::new(ffprobe)
         .args([
             "-v",
             "quiet",

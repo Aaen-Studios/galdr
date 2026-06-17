@@ -15,7 +15,8 @@ pub fn run_conversion(
     args: &[String],
     duration: f64,
 ) -> std::result::Result<Vec<FfmpegEvent>, String> {
-    let mut child = Command::new("ffmpeg")
+    let ffmpeg = crate::ffmpeg::ffmpeg_path();
+    let mut child = Command::new(ffmpeg)
         .args(args)
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
@@ -93,7 +94,8 @@ pub fn run_conversion(
 }
 
 pub fn detect_ffmpeg() -> bool {
-    Command::new("ffmpeg")
+    let path = crate::ffmpeg::ffmpeg_path();
+    Command::new(path)
         .arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())

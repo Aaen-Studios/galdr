@@ -10,7 +10,8 @@ pub fn run() {
     commands::rune_tags::seed_defaults();
 
     tauri::Builder::default()
-        .setup(|_app| {
+        .setup(|app| {
+            ffmpeg::init_paths(&app.handle());
             discord_rpc::connect(DISCORD_CLIENT_ID);
             discord_rpc::set_idle();
             Ok(())
