@@ -565,7 +565,7 @@
 }
 
 .forge-timeline-labels-spacer {
-  height: 24px;
+  height: 56px;
   border-bottom: 1px solid var(--fg-faint);
 }
 

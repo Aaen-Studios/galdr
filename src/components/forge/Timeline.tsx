@@ -75,28 +75,33 @@ export default function Timeline() {
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
       if (!dragging) return;
-      const dx = (e.clientX - dragging.startX!) / zoom;
       if (dragging.type === "playhead") {
-        setPlayhead(Math.max(0, snapTime(dragging.origVal! + dx)));
-      } else if (dragging.type === "clip" && dragging.clipId && dragging.track) {
-        const newStart = snapTime(Math.max(0, dragging.origVal! + dx));
-        moveClip(dragging.clipId, newStart, dragging.track);
-      } else if (dragging.type === "trim-start" && dragging.clipId && dragging.track) {
-        const track = dragging.track === "video" ? project.videoTrack : project.audioTrack;
-        const clip = track.clips.find((c) => c.id === dragging.clipId);
-        if (!clip) return;
-        const dt = (e.clientX - dragging.startX!) / zoom;
-        const newSourceStart = Math.max(0, dragging.origSourceStart! + dt * clip.speed);
-        if (newSourceStart < clip.sourceEnd - 0.05) {
-          trimClip(dragging.clipId, newSourceStart, clip.sourceEnd, dragging.track);
+        const rect = rulerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const x = e.clientX - rect.left + (scrollRef.current?.scrollLeft || 0);
+        setPlayhead(Math.max(0, snapTime(xToTime(x))));
+      } else {
+        const dx = (e.clientX - dragging.startX!) / zoom;
+        if (dragging.type === "clip" && dragging.clipId && dragging.track) {
+          const newStart = snapTime(Math.max(0, dragging.origVal! + dx));
+          moveClip(dragging.clipId, newStart, dragging.track);
+        } else if (dragging.type === "trim-start" && dragging.clipId && dragging.track) {
+          const trackData = dragging.track === "video" ? project.videoTrack : project.audioTrack;
+          const clip = trackData.clips.find((c) => c.id === dragging.clipId);
+          if (!clip) return;
+          const dt = (e.clientX - dragging.startX!) / zoom;
+          const newSourceStart = Math.max(0, dragging.origSourceStart! + dt * clip.speed);
+          if (newSourceStart < clip.sourceEnd - 0.05) {
+            trimClip(dragging.clipId, newSourceStart, clip.sourceEnd, dragging.track);
+          }
+        } else if (dragging.type === "trim-end" && dragging.clipId && dragging.track) {
+          const trackData = dragging.track === "video" ? project.videoTrack : project.audioTrack;
+          const clip = trackData.clips.find((c) => c.id === dragging.clipId);
+          if (!clip) return;
+          const dt = (e.clientX - dragging.startX!) / zoom;
+          const newSourceEnd = Math.max(clip.sourceStart + 0.05, dragging.origSourceEnd! + dt * clip.speed);
+          trimClip(dragging.clipId, clip.sourceStart, newSourceEnd, dragging.track);
         }
-      } else if (dragging.type === "trim-end" && dragging.clipId && dragging.track) {
-        const track = dragging.track === "video" ? project.videoTrack : project.audioTrack;
-        const clip = track.clips.find((c) => c.id === dragging.clipId);
-        if (!clip) return;
-        const dt = (e.clientX - dragging.startX!) / zoom;
-        const newSourceEnd = Math.max(clip.sourceStart + 0.05, dragging.origSourceEnd! + dt * clip.speed);
-        trimClip(dragging.clipId, clip.sourceStart, newSourceEnd, dragging.track);
       }
     },
     [dragging, zoom, snapTime, setPlayhead, moveClip, trimClip, project]
