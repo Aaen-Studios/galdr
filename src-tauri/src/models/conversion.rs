@@ -14,6 +14,7 @@ pub struct ConversionParams {
     pub framerate: Option<f64>,
     pub crf: Option<u8>,
     pub preset: Option<String>,
+    pub quality: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +48,7 @@ impl Default for ConversionParams {
             framerate: None,
             crf: None,
             preset: None,
+            quality: None,
         }
     }
 }

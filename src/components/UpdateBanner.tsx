@@ -3,6 +3,8 @@ import { check } from "@tauri-apps/plugin-updater";
 import type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useGaldrStore } from "../store";
 
+const DEV_UPDATE_TEST = import.meta.env.VITE_UPDATE_TEST === "true";
+
 export default function UpdateBanner() {
   const {
     updateStatus, setUpdateStatus,
@@ -24,17 +26,45 @@ export default function UpdateBanner() {
           updateRef.current = u;
           setUpdateVersion(u.version);
           setUpdateStatus("available");
+        } else if (DEV_UPDATE_TEST) {
+          setUpdateVersion("9.9.9");
+          setUpdateStatus("available");
         } else {
           setUpdateStatus("idle");
         }
       })
       .catch(() => {
-        setUpdateStatus("idle");
+        if (DEV_UPDATE_TEST) {
+          setUpdateVersion("9.9.9");
+          setUpdateStatus("available");
+        } else {
+          setUpdateStatus("idle");
+        }
       });
   }, [updateDismissed]);
 
   const handleUpgrade = useCallback(async () => {
     const u = updateRef.current;
+    if (DEV_UPDATE_TEST) {
+      setUpdateStatus("downloading");
+      setDownloadedBytes(0);
+      setTotalBytes(5_000_000);
+      let pct = 0;
+      const interval = setInterval(() => {
+        pct += Math.random() * 15 + 5;
+        if (pct >= 100) {
+          pct = 100;
+          clearInterval(interval);
+          setUpdateProgress(100);
+          setDownloadedBytes(5_000_000);
+          setTimeout(() => setUpdateStatus("downloaded"), 400);
+        } else {
+          setUpdateProgress(Math.round(pct));
+          setDownloadedBytes(Math.round((pct / 100) * 5_000_000));
+        }
+      }, 500);
+      return;
+    }
     if (!u) return;
     setUpdateStatus("downloading");
     setDownloadedBytes(0);
@@ -64,6 +94,14 @@ export default function UpdateBanner() {
 
   const handleInstall = useCallback(async () => {
     const u = updateRef.current;
+    if (DEV_UPDATE_TEST) {
+      setUpdateStatus("installing");
+      setTimeout(() => {
+        setUpdateDismissed(true);
+        setUpdateStatus("idle");
+      }, 1500);
+      return;
+    }
     if (!u) return;
     setUpdateStatus("installing");
     try {
@@ -94,6 +132,7 @@ export default function UpdateBanner() {
           <span className="update-banner-rune">ᚠ</span>
           <span className="update-banner-text">
             update available: <strong>v{updateVersion}</strong>
+            {DEV_UPDATE_TEST && <span className="update-banner-dev"> [dev test]</span>}
           </span>
           <button className="btn update-banner-btn" onClick={handleUpgrade}>
             ᛏ upgrade

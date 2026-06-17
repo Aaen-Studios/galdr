@@ -2,19 +2,20 @@ import { useState } from "react";
 import ScrambleText from "../components/ScrambleText";
 
 interface Props {
-  onNavigate: (page: "convert" | "batch") => void;
+  onNavigate: (page: "convert" | "batch" | "compress") => void;
 }
 
 interface ToolCard {
   rune: string;
   label: string;
   desc: string;
-  target: "convert" | "batch";
+  target: "convert" | "batch" | "compress";
 }
 
 const TOOLS: ToolCard[] = [
   { rune: "ᚨ", label: "convert", desc: "single file conversion", target: "convert" },
   { rune: "ᚷ", label: "batch", desc: "bulk folder conversion", target: "batch" },
+  { rune: "ᛉ", label: "compress", desc: "file size reduction", target: "compress" },
 ];
 
 export default function HomePage({ onNavigate }: Props) {

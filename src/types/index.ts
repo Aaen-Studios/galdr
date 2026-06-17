@@ -10,6 +10,7 @@ export interface ConversionParams {
   framerate?: number;
   crf?: number;
   preset?: string;
+  quality?: number;
 }
 
 export interface StreamInfo {

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
 import { useGaldrStore } from "../store";
-import CustomSelect from "../components/CustomSelect";
+import Dropdown from "../components/Dropdown";
 import { TRANSITION_OPTIONS } from "../transitions";
 
 const SUBFOLDERS = ["video", "audio", "image"];
@@ -69,24 +69,21 @@ export default function SettingsPage({ onNavigate }: Props) {
 
       <div className="card">
         <label className="label">updates</label>
-        <p className="settings-hint">
-          current version: <strong>{version || "..."}</strong>
-        </p>
-        <div className="row" style={{ marginTop: 12 }}>
+        <div className="row">
+          <p className="settings-hint" style={{ flex: 1, margin: 0 }}>
+            v{version || "..."} &mdash; checks GitHub on startup
+          </p>
           <button className="btn" onClick={() => setUpdateDismissed(false)}>
-            ᚠ check for updates
+            ᚠ check
           </button>
         </div>
-        <p className="settings-hint" style={{ marginTop: 8 }}>
-          checks GitHub releases for newer versions on startup
-        </p>
       </div>
 
       <div className="card">
         <label className="label">page transition</label>
         <div className="row">
           <div style={{ flex: 1 }}>
-            <CustomSelect
+            <Dropdown
               options={TRANSITION_OPTIONS}
               value={transitionStyle}
               onChange={(v) => setTransitionStyle(v as typeof transitionStyle)}

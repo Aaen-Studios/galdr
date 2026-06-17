@@ -8,6 +8,7 @@ pub enum FfmpegEvent {
     Progress(f64),
     Done(String),
     Error(String),
+    Log(String),
 }
 
 pub fn run_conversion(
@@ -34,6 +35,10 @@ pub fn run_conversion(
                 Ok(l) => l,
                 Err(_) => break,
             };
+
+            if !line.is_empty() && !time_re.is_match(&line) {
+                let _ = tx_thread.send(FfmpegEvent::Log(line.clone()));
+            }
 
             if line.starts_with("Error ") || line.contains("Conversion failed") {
                 let _ = tx_thread.send(FfmpegEvent::Error(line.clone()));

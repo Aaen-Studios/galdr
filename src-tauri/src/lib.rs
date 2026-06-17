@@ -17,6 +17,7 @@ pub fn run() {
             commands::start_batch_conversion,
             commands::is_directory,
             commands::cancel_conversion,
+            commands::estimate_compress_size,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

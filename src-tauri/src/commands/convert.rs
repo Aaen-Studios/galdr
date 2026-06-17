@@ -32,6 +32,11 @@ pub struct ConversionErrorPayload {
     pub error: String,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct ConversionLogPayload {
+    pub message: String,
+}
+
 #[tauri::command]
 pub async fn start_conversion(
     app_handle: tauri::AppHandle,
@@ -55,6 +60,14 @@ pub async fn start_conversion(
                     ConversionProgressPayload {
                         job_id: "default".to_string(),
                         progress: *p,
+                    },
+                );
+            }
+            crate::ffmpeg::FfmpegEvent::Log(msg) => {
+                let _ = app_handle.emit(
+                    "conversion-log",
+                    ConversionLogPayload {
+                        message: msg.clone(),
                     },
                 );
             }
@@ -219,6 +232,7 @@ pub async fn start_batch_conversion(
             framerate: None,
             crf: None,
             preset: None,
+            quality: None,
         };
 
         let args = build_args(&single_params);
@@ -236,6 +250,14 @@ pub async fn start_batch_conversion(
                                 failed,
                                 current_file: file_name.clone(),
                                 file_progress: *p,
+                            },
+                        );
+                    }
+                    crate::ffmpeg::FfmpegEvent::Log(msg) => {
+                        let _ = app_handle.emit(
+                            "batch-log",
+                            ConversionLogPayload {
+                                message: msg.clone(),
                             },
                         );
                     }

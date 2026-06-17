@@ -5,40 +5,12 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useGaldrStore } from "../store";
-import CustomSelect from "../components/CustomSelect";
+import Dropdown from "../components/Dropdown";
 import ScrambleText from "../components/ScrambleText";
+import { FORMAT_OPTIONS } from "../options";
+import type { FormatOption } from "../options";
 
 const IMAGE_CODECS = ["png", "jpeg", "gif", "bmp", "tiff", "webp"];
-
-const FORMAT_OPTIONS = [
-  { value: "mp4", label: "mp4 (video)", type: "video" as const },
-  { value: "mkv", label: "mkv (video)", type: "video" as const },
-  { value: "avi", label: "avi (video)", type: "video" as const },
-  { value: "mov", label: "mov (video)", type: "video" as const },
-  { value: "webm", label: "webm (video)", type: "video" as const },
-  { value: "m4v", label: "m4v (video)", type: "video" as const },
-  { value: "flv", label: "flv (video)", type: "video" as const },
-  { value: "ogv", label: "ogv (video)", type: "video" as const },
-  { value: "wmv", label: "wmv (video)", type: "video" as const },
-  { value: "gif", label: "gif (video)", type: "video" as const },
-  { value: "mod", label: "mod (video)", type: "video" as const },
-  { value: "mp3", label: "mp3 (audio)", type: "audio" as const },
-  { value: "flac", label: "flac (audio)", type: "audio" as const },
-  { value: "wav", label: "wav (audio)", type: "audio" as const },
-  { value: "aac", label: "aac (audio)", type: "audio" as const },
-  { value: "ogg", label: "ogg (audio)", type: "audio" as const },
-  { value: "opus", label: "opus (audio)", type: "audio" as const },
-  { value: "wma", label: "wma (audio)", type: "audio" as const },
-  { value: "m4a", label: "m4a (audio)", type: "audio" as const },
-  { value: "aiff", label: "aiff (audio)", type: "audio" as const },
-  { value: "ac3", label: "ac3 (audio)", type: "audio" as const },
-  { value: "png", label: "png (image)", type: "image" as const },
-  { value: "jpeg", label: "jpeg (image)", type: "image" as const },
-  { value: "webp", label: "webp (image)", type: "image" as const },
-  { value: "bmp", label: "bmp (image)", type: "image" as const },
-  { value: "tiff", label: "tiff (image)", type: "image" as const },
-  { value: "avif", label: "avif (image)", type: "image" as const },
-];
 
 type MediaType = "video" | "audio" | "image" | null;
 
@@ -76,7 +48,6 @@ export default function ConvertPage() {
 
   const [log, setLog] = useState<string[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [filteredOptions, setFilteredOptions] = useState(FORMAT_OPTIONS);
   const [mediaType, setMediaType] = useState<MediaType>(null);
   const [btnHover, setBtnHover] = useState(false);
 
@@ -102,6 +73,19 @@ export default function ConvertPage() {
   }, [setConversionProgress]);
 
   useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    (async () => {
+      unlisten = await listen<{ message: string }>(
+        "conversion-log",
+        (e) => {
+          setLog((p) => [...p, e.payload.message]);
+        },
+      );
+    })();
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+
+  useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
     (async () => {
       unlisteners.push(
@@ -123,29 +107,21 @@ export default function ConvertPage() {
 
   useEffect(() => {
     if (!mediaInfo) {
-      setFilteredOptions(FORMAT_OPTIONS);
       setMediaType(null);
       return;
     }
     const mt = detectMediaType(mediaInfo);
     setMediaType(mt);
-    let allowed: Set<string>;
-    if (mt === "image") {
-      allowed = new Set(["image"]);
-    } else if (mt === "audio") {
-      allowed = new Set(["audio"]);
-    } else {
-      allowed = new Set(["video", "audio", "image"]);
-    }
-    const filtered = FORMAT_OPTIONS.filter((o) => allowed.has(o.type));
-    setFilteredOptions(filtered);
+    const allowed = mt === "image" ? ["image"] as const
+      : mt === "audio" ? ["audio"] as const
+      : ["video", "audio", "image"] as const;
     const cur = conversionParams.output_format;
-    if (!filtered.some((o) => o.value === cur)) {
+    if (!FORMAT_OPTIONS.some((o) => o.type && (allowed as readonly string[]).includes(o.type) && o.value === cur)) {
       const ext = conversionParams.input_path
         ?.split("/").pop()?.split(".").pop()?.toLowerCase();
-      let match: (typeof FORMAT_OPTIONS)[number] | undefined;
-      if (ext) match = filtered.find((o) => o.value === ext);
-      setConversionParams({ output_format: match?.value ?? filtered[0]?.value ?? "mp4" });
+      let match: FormatOption | undefined;
+      if (ext) match = FORMAT_OPTIONS.find((o) => o.value === ext);
+      setConversionParams({ output_format: match?.value ?? FORMAT_OPTIONS.find((o) => (allowed as readonly string[]).includes(o.type))?.value ?? "mp4" });
     }
   }, [mediaInfo]);
 
@@ -265,10 +241,12 @@ export default function ConvertPage() {
 
       <div className="card">
         <label className="label">output format</label>
-        <CustomSelect
-          options={filteredOptions}
+        <Dropdown
+          options={FORMAT_OPTIONS}
           value={conversionParams.output_format}
           onChange={(v) => setConversionParams({ output_format: v })}
+          showCategories
+          filterType={mediaType ?? undefined}
         />
       </div>
 

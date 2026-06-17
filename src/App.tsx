@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useState, useEffect, useRef } from "react";
+import { getCurrentWindow, ProgressBarStatus, UserAttentionType } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import HomePage from "./pages/HomePage";
 import ConvertPage from "./pages/ConvertPage";
 import BatchConvertPage from "./pages/BatchConvertPage";
+import CompressPage from "./pages/CompressPage";
 import SettingsPage from "./pages/SettingsPage";
 import ScrambleText from "./components/ScrambleText";
 import UpdateBanner from "./components/UpdateBanner";
@@ -11,18 +12,47 @@ import PageTransition from "./transitions";
 import { useGaldrStore } from "./store";
 import "./App.css";
 
-type Page = "home" | "convert" | "batch" | "settings";
+type Page = "home" | "convert" | "batch" | "compress" | "settings";
 
 function App() {
   const [page, setPage] = useState<Page>("home");
   const [prevPage, setPrevPage] = useState<Page>("home");
   const [appVersion, setAppVersion] = useState("");
   const transitionStyle = useGaldrStore((s) => s.transitionStyle);
+  const taskbarAction = useGaldrStore((s) => s.taskbarAction);
+  const taskbarProgress = useGaldrStore((s) => s.taskbarProgress);
+  const taskbarFlash = useGaldrStore((s) => s.taskbarFlash);
+  const setTaskbarFlash = useGaldrStore((s) => s.setTaskbarFlash);
   const win = getCurrentWindow();
+  const prevFlash = useRef(false);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("0.1.0"));
   }, []);
+
+  useEffect(() => {
+    const title = taskbarAction ? `GALDR - ${taskbarAction}` : "GALDR";
+    win.setTitle(title).catch(() => {});
+  }, [taskbarAction, win]);
+
+  useEffect(() => {
+    if (taskbarProgress === null) {
+      win.setProgressBar({ progress: 0, status: ProgressBarStatus.None }).catch(() => {});
+    } else {
+      win.setProgressBar({ progress: Math.round(taskbarProgress * 100), status: ProgressBarStatus.Normal }).catch(() => {});
+    }
+  }, [taskbarProgress, win]);
+
+  useEffect(() => {
+    if (taskbarFlash && !prevFlash.current) {
+      prevFlash.current = true;
+      win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
+      setTimeout(() => {
+        prevFlash.current = false;
+        setTaskbarFlash(false);
+      }, 100);
+    }
+  }, [taskbarFlash, win, setTaskbarFlash]);
 
   const handleSettings = () => {
     if (page === "settings") {
@@ -49,6 +79,11 @@ function App() {
       return [
         { label: "convert", target: "convert" },
         { label: "batch", target: "batch" },
+      ];
+    }
+    if (page === "compress") {
+      return [
+        { label: "compress", target: "compress" },
       ];
     }
     return [{ label: page, target: page }];
@@ -101,6 +136,7 @@ function App() {
           {page === "home" && <HomePage onNavigate={setPage} />}
           {page === "convert" && <ConvertPage />}
           {page === "batch" && <BatchConvertPage />}
+          {page === "compress" && <CompressPage />}
           {page === "settings" && <SettingsPage onNavigate={setPage} />}
         </PageTransition>
       </main>

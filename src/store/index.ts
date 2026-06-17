@@ -18,6 +18,10 @@ interface GaldrState {
   testTransitionSignal: number;
   crtEnabled: boolean;
 
+  taskbarAction: string;
+  taskbarProgress: number | null;
+  taskbarFlash: boolean;
+
   updateStatus: UpdateStatus;
   updateVersion: string | null;
   updateNotes: string | null;
@@ -36,6 +40,10 @@ interface GaldrState {
   setCrtEnabled: (v: boolean) => void;
   triggerTransitionTest: () => void;
   reset: () => void;
+
+  setTaskbarAction: (v: string) => void;
+  setTaskbarProgress: (v: number | null) => void;
+  setTaskbarFlash: (v: boolean) => void;
 
   setUpdateStatus: (v: UpdateStatus) => void;
   setUpdateVersion: (v: string | null) => void;
@@ -56,6 +64,7 @@ const defaultParams: ConversionParams = {
   framerate: undefined,
   crf: undefined,
   preset: undefined,
+  quality: undefined,
 };
 
 export const useGaldrStore = create<GaldrState>((set) => ({
@@ -70,6 +79,10 @@ export const useGaldrStore = create<GaldrState>((set) => ({
   transitionStyle: DEFAULT_TRANSITION,
   testTransitionSignal: 0,
   crtEnabled: false,
+
+  taskbarAction: "",
+  taskbarProgress: null,
+  taskbarFlash: false,
 
   updateStatus: "idle",
   updateVersion: null,
@@ -91,6 +104,9 @@ export const useGaldrStore = create<GaldrState>((set) => ({
   setTransitionStyle: (v) => set({ transitionStyle: v }),
   setCrtEnabled: (v) => set({ crtEnabled: v }),
   triggerTransitionTest: () => set((s) => ({ testTransitionSignal: s.testTransitionSignal + 1 })),
+  setTaskbarAction: (v) => set({ taskbarAction: v }),
+  setTaskbarProgress: (v) => set({ taskbarProgress: v }),
+  setTaskbarFlash: (v) => set({ taskbarFlash: v }),
   reset: () =>
     set({
       mediaInfo: null,

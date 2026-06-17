@@ -37,14 +37,208 @@ pub fn build_args(params: &ConversionParams) -> Vec<String> {
         args.push(bitrate.clone());
     }
 
+    // Build filter graph from parts (resolution, GIF pipeline, etc.)
+    let mut filter_parts: Vec<String> = Vec::new();
+
     if let Some((w, h)) = params.resolution {
-        args.push("-vf".to_string());
-        args.push(format!("scale={}:{}", w, h));
+        filter_parts.push(format!("scale={}:{}:flags=lanczos", w, h));
     }
 
     if let Some(fps) = params.framerate {
-        args.push("-r".to_string());
-        args.push(fps.to_string());
+        filter_parts.push(format!("fps={}", fps));
+    }
+
+    // Format-specific quality settings
+    if let Some(quality) = params.quality {
+        match params.output_format.to_lowercase().as_str() {
+            // ── Video formats ──
+            "mp4" | "m4v" | "mov" | "avi" | "flv" | "ogv" | "wmv" | "ts" | "3gp" => {
+                if params.video_codec.is_none() && params.crf.is_none() && params.video_bitrate.is_none() {
+                    let crf = (51.0 - quality * 50.0).clamp(0.0, 51.0).round() as u8;
+                    args.push("-crf".to_string());
+                    args.push(crf.to_string());
+                }
+                if params.audio_codec.is_none() && params.audio_bitrate.is_none() {
+                    args.push("-b:a".to_string());
+                    args.push(audio_bitrate(quality));
+                }
+            }
+            "mkv" | "webm" => {
+                if params.video_codec.is_none() && params.crf.is_none() && params.video_bitrate.is_none() {
+                    let crf = (63.0 - quality * 63.0).clamp(0.0, 63.0).round() as u8;
+                    args.push("-crf".to_string());
+                    args.push(crf.to_string());
+                }
+                if params.audio_codec.is_none() && params.audio_bitrate.is_none() {
+                    args.push("-b:a".to_string());
+                    args.push(audio_bitrate(quality));
+                }
+            }
+
+            // ── GIF ──
+            "gif" => {
+                let max_colors = (16.0 + quality * 240.0).clamp(16.0, 256.0).round() as u32;
+                let fps = (5.0 + quality * 25.0).clamp(5.0, 30.0).round() as u32;
+                let bayer_scale = ((1.0 - quality) * 5.0).clamp(0.0, 5.0).round() as u32;
+                let has_filter = !filter_parts.is_empty();
+                let prefix = if has_filter {
+                    format!("{},", filter_parts.join(","))
+                } else {
+                    String::new()
+                };
+                let vf = format!(
+                    "{}fps={},split[s0][s1];[s0]palettegen=max_colors={}:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale={}",
+                    prefix, fps, max_colors, bayer_scale
+                );
+                filter_parts.clear();
+                args.push("-vf".to_string());
+                args.push(vf);
+            }
+
+            // ── Image formats ──
+            "jpg" | "jpeg" => {
+                let qv = (1.0 + (1.0 - quality) * 30.0).clamp(1.0, 31.0).round() as u8;
+                if params.video_codec.is_none() {
+                    args.push("-c:v".to_string());
+                    args.push("mjpeg".to_string());
+                }
+                args.push("-q:v".to_string());
+                args.push(qv.to_string());
+            }
+            "webp" => {
+                let q = (quality * 100.0).clamp(0.0, 100.0).round() as u8;
+                if params.video_codec.is_none() {
+                    args.push("-c:v".to_string());
+                    args.push("libwebp".to_string());
+                }
+                args.push("-quality".to_string());
+                args.push(q.to_string());
+            }
+            "avif" => {
+                let q = (quality * 100.0).clamp(0.0, 100.0).round() as u8;
+                args.push("-quality".to_string());
+                args.push(q.to_string());
+            }
+            "png" => {
+                let level = (1.0 + quality * 8.0).clamp(1.0, 9.0).round() as u8;
+                if params.video_codec.is_none() {
+                    args.push("-c:v".to_string());
+                    args.push("png".to_string());
+                }
+                args.push("-compression_level".to_string());
+                args.push(level.to_string());
+            }
+            "bmp" => {
+                if params.video_codec.is_none() {
+                    args.push("-c:v".to_string());
+                    args.push("bmp".to_string());
+                }
+            }
+            "tiff" => {
+                let comp = match quality {
+                    q if q >= 0.7 => "lzw",
+                    q if q >= 0.4 => "deflate",
+                    _ => "raw",
+                };
+                if params.video_codec.is_none() {
+                    args.push("-c:v".to_string());
+                    args.push("tiff".to_string());
+                }
+                args.push("-compression_algo".to_string());
+                args.push(comp.to_string());
+            }
+
+            // ── Audio formats ──
+            "mp3" => {
+                if params.audio_codec.is_none() {
+                    args.push("-c:a".to_string());
+                    args.push("libmp3lame".to_string());
+                }
+                if params.audio_bitrate.is_none() {
+                    args.push("-b:a".to_string());
+                    args.push(audio_bitrate(quality));
+                }
+                args.push("-vn".to_string());
+            }
+            "aac" | "m4a" => {
+                if params.audio_codec.is_none() {
+                    args.push("-c:a".to_string());
+                    args.push("aac".to_string());
+                }
+                if params.audio_bitrate.is_none() {
+                    args.push("-b:a".to_string());
+                    args.push(audio_bitrate(quality));
+                }
+                args.push("-vn".to_string());
+            }
+            "ogg" | "opus" => {
+                if params.audio_codec.is_none() {
+                    args.push("-c:a".to_string());
+                    args.push(if params.output_format == "opus" { "libopus".to_string() } else { "libvorbis".to_string() });
+                }
+                if params.audio_bitrate.is_none() {
+                    args.push("-b:a".to_string());
+                    args.push(audio_bitrate(quality));
+                }
+                args.push("-vn".to_string());
+            }
+            "wav" | "aiff" => {
+                if params.audio_bitrate.is_none() {
+                    args.push("-b:a".to_string());
+                    args.push("1411k".to_string());
+                }
+                args.push("-vn".to_string());
+            }
+            "flac" => {
+                if params.audio_codec.is_none() {
+                    args.push("-c:a".to_string());
+                    args.push("flac".to_string());
+                }
+                let level = (0.0 + quality * 8.0).clamp(0.0, 8.0).round() as u8;
+                args.push("-compression_level".to_string());
+                args.push(level.to_string());
+                args.push("-vn".to_string());
+            }
+            "wma" => {
+                if params.audio_bitrate.is_none() {
+                    args.push("-b:a".to_string());
+                    args.push(audio_bitrate(quality));
+                }
+                args.push("-vn".to_string());
+            }
+            "ac3" => {
+                if params.audio_codec.is_none() {
+                    args.push("-c:a".to_string());
+                    args.push("ac3".to_string());
+                }
+                if params.audio_bitrate.is_none() {
+                    args.push("-b:a".to_string());
+                    args.push(audio_bitrate(quality));
+                }
+                args.push("-vn".to_string());
+            }
+
+            _ => {}
+        }
+    }
+
+    // Apply pixel format for compatible video output (not for GIF or audio-only)
+    let is_audio_fmt = matches!(
+        params.output_format.to_lowercase().as_str(),
+        "mp3" | "aac" | "m4a" | "ogg" | "opus" | "wav" | "aiff" | "flac" | "wma" | "ac3"
+    );
+    let is_gif = params.output_format.to_lowercase() == "gif";
+    if !is_audio_fmt && !is_gif && params.video_codec.as_deref().unwrap_or("") != "png" {
+        if params.video_codec.is_none() || params.video_codec.as_deref().unwrap_or("") == "libx264" {
+            args.push("-pix_fmt".to_string());
+            args.push("yuv420p".to_string());
+        }
+    }
+
+    // Remaining filter parts (if not already consumed by GIF)
+    if !filter_parts.is_empty() {
+        args.push("-vf".to_string());
+        args.push(filter_parts.join(","));
     }
 
     let input_stem = params.input_path
@@ -63,43 +257,169 @@ pub fn build_args(params: &ConversionParams) -> Vec<String> {
     args
 }
 
+fn audio_bitrate(quality: f64) -> String {
+    match quality {
+        q if q >= 0.95 => "320k",
+        q if q >= 0.85 => "256k",
+        q if q >= 0.70 => "192k",
+        q if q >= 0.50 => "128k",
+        q if q >= 0.30 => "96k",
+        q if q >= 0.15 => "64k",
+        _ => "32k",
+    }
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[test]
-    fn test_build_args_minimal() {
-        let params = ConversionParams {
+    fn make_params(output_format: &str, quality: Option<f64>) -> ConversionParams {
+        ConversionParams {
             input_path: PathBuf::from("input.mp4"),
             output_dir: PathBuf::from("."),
-            output_format: "avi".to_string(),
+            output_format: output_format.to_string(),
+            quality,
             ..Default::default()
-        };
-        let args = build_args(&params);
-        assert!(args.contains(&"-i".to_string()));
-        assert!(args.contains(&"input.mp4".to_string()));
-        let last = args.last().unwrap();
-        assert!(last.ends_with("input.avi"), "last arg should end with input.avi, got: {last}");
+        }
+    }
+
+    fn has_flag(args: &[String], flag: &str) -> bool {
+        args.windows(2).any(|w| w[0] == flag)
+    }
+
+    fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a String> {
+        args.windows(2).find(|w| w[0] == flag).map(|w| &w[1])
     }
 
     #[test]
-    fn test_build_args_full() {
+    fn test_video_crf_from_quality() {
+        let args = build_args(&make_params("mp4", Some(0.5)));
+        assert!(has_flag(&args, "-crf"), "should set -crf for mp4");
+        let crf = flag_value(&args, "-crf").unwrap();
+        let val: u8 = crf.parse().unwrap();
+        assert_eq!(val, 26, "50% quality should give CRF 26");
+    }
+
+    #[test]
+    fn test_video_crf_high_quality() {
+        let args = build_args(&make_params("mp4", Some(1.0)));
+        let crf = flag_value(&args, "-crf").unwrap();
+        assert_eq!(crf, "1", "100% quality should give CRF 1");
+    }
+
+    #[test]
+    fn test_video_crf_low_quality() {
+        let args = build_args(&make_params("mp4", Some(0.0)));
+        let crf = flag_value(&args, "-crf").unwrap();
+        assert_eq!(crf, "51", "0% quality should give CRF 51");
+    }
+
+    #[test]
+    fn test_jpeg_quality() {
+        let args = build_args(&make_params("jpg", Some(0.5)));
+        assert!(has_flag(&args, "-q:v"), "should set -q:v for jpg");
+        assert!(has_flag(&args, "-c:v"), "should set -c:v for jpg");
+    }
+
+    #[test]
+    fn test_webp_quality() {
+        let args = build_args(&make_params("webp", Some(0.8)));
+        assert!(has_flag(&args, "-quality"), "should set -quality for webp");
+        let q = flag_value(&args, "-quality").unwrap();
+        assert_eq!(q, "80");
+    }
+
+    #[test]
+    fn test_png_compression() {
+        let args = build_args(&make_params("png", Some(0.5)));
+        assert!(has_flag(&args, "-compression_level"), "should set -compression_level for png");
+    }
+
+    #[test]
+    fn test_audio_bitrate_high() {
+        let args = build_args(&make_params("mp3", Some(1.0)));
+        let br = flag_value(&args, "-b:a").unwrap();
+        assert_eq!(br, "320k");
+    }
+
+    #[test]
+    fn test_audio_bitrate_low() {
+        let args = build_args(&make_params("mp3", Some(0.0)));
+        let br = flag_value(&args, "-b:a").unwrap();
+        assert_eq!(br, "32k");
+    }
+
+    #[test]
+    fn test_gif_palette() {
+        let args = build_args(&make_params("gif", Some(0.5)));
+        assert!(has_flag(&args, "-vf"), "should set -vf for gif");
+        let vf = flag_value(&args, "-vf").unwrap();
+        assert!(vf.contains("palettegen"), "gif filter should include palettegen");
+        assert!(vf.contains("paletteuse"), "gif filter should include paletteuse");
+    }
+
+    #[test]
+    fn test_mkv_crf_range() {
+        let args = build_args(&make_params("mkv", Some(0.5)));
+        let crf = flag_value(&args, "-crf").unwrap();
+        let val: u8 = crf.parse().unwrap();
+        assert!(val <= 63, "mkv/webm CRF should be in range 0-63");
+    }
+
+    #[test]
+    fn test_pix_fmt_set_for_video() {
+        let args = build_args(&make_params("mp4", Some(0.5)));
+        assert!(has_flag(&args, "-pix_fmt"), "should set -pix_fmt for mp4 video");
+    }
+
+    #[test]
+    fn test_pix_fmt_not_for_audio() {
+        let args = build_args(&make_params("mp3", Some(0.5)));
+        assert!(!has_flag(&args, "-pix_fmt"), "should NOT set -pix_fmt for audio-only");
+    }
+
+    #[test]
+    fn test_vn_flag_for_audio() {
+        let args = build_args(&make_params("flac", Some(0.5)));
+        assert!(args.contains(&"-vn".to_string()), "audio formats should have -vn");
+    }
+
+    #[test]
+    fn test_flac_compression() {
+        let args = build_args(&make_params("flac", Some(0.5)));
+        let level = flag_value(&args, "-compression_level").unwrap();
+        assert_eq!(level, "4");
+    }
+
+    #[test]
+    fn test_explicit_crf_overrides_quality() {
         let params = ConversionParams {
-            input_path: PathBuf::from("input.mkv"),
-            output_dir: PathBuf::from("out"),
+            input_path: PathBuf::from("input.mp4"),
+            output_dir: PathBuf::from("."),
             output_format: "mp4".to_string(),
-            video_codec: Some("libx264".to_string()),
-            audio_codec: Some("aac".to_string()),
-            crf: Some(23),
-            preset: Some("medium".to_string()),
-            resolution: Some((1920, 1080)),
+            quality: Some(0.5),
+            crf: Some(18),
             ..Default::default()
         };
         let args = build_args(&params);
-        assert!(args.contains(&"-c:v".to_string()));
-        assert!(args.contains(&"libx264".to_string()));
-        assert!(args.contains(&"-crf".to_string()));
-        assert!(args.contains(&"23".to_string()));
+        let crf = flag_value(&args, "-crf").unwrap();
+        assert_eq!(crf, "18", "explicit CRF should override quality-derived CRF");
+    }
+
+    #[test]
+    fn test_audio_bitrate_does_not_override_explicit() {
+        let params = ConversionParams {
+            input_path: PathBuf::from("input.mp4"),
+            output_dir: PathBuf::from("."),
+            output_format: "mp3".to_string(),
+            quality: Some(0.5),
+            audio_bitrate: Some("64k".to_string()),
+            ..Default::default()
+        };
+        let args = build_args(&params);
+        let br = flag_value(&args, "-b:a").unwrap();
+        assert_eq!(br, "64k", "explicit audio bitrate should override quality-derived");
     }
 }

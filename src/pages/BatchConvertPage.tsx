@@ -2,74 +2,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import CustomSelect from "../components/CustomSelect";
+import Dropdown from "../components/Dropdown";
 import ScrambleText from "../components/ScrambleText";
+import { EXT_OPTIONS, FMT_OPTIONS } from "../options";
 import type { ScannedFile, BatchProgress } from "../types";
-
-const EXT_OPTIONS = [
-  { value: "mp4", label: ".mp4", type: "video" as const },
-  { value: "mkv", label: ".mkv", type: "video" as const },
-  { value: "avi", label: ".avi", type: "video" as const },
-  { value: "mov", label: ".mov", type: "video" as const },
-  { value: "webm", label: ".webm", type: "video" as const },
-  { value: "m4v", label: ".m4v", type: "video" as const },
-  { value: "flv", label: ".flv", type: "video" as const },
-  { value: "ogv", label: ".ogv", type: "video" as const },
-  { value: "wmv", label: ".wmv", type: "video" as const },
-  { value: "ts", label: ".ts", type: "video" as const },
-  { value: "3gp", label: ".3gp", type: "video" as const },
-  { value: "mod", label: ".mod", type: "video" as const },
-  { value: "mp3", label: ".mp3", type: "audio" as const },
-  { value: "flac", label: ".flac", type: "audio" as const },
-  { value: "wav", label: ".wav", type: "audio" as const },
-  { value: "aac", label: ".aac", type: "audio" as const },
-  { value: "ogg", label: ".ogg", type: "audio" as const },
-  { value: "opus", label: ".opus", type: "audio" as const },
-  { value: "wma", label: ".wma", type: "audio" as const },
-  { value: "m4a", label: ".m4a", type: "audio" as const },
-  { value: "aiff", label: ".aiff", type: "audio" as const },
-  { value: "ac3", label: ".ac3", type: "audio" as const },
-  { value: "dts", label: ".dts", type: "audio" as const },
-  { value: "png", label: ".png", type: "image" as const },
-  { value: "jpg", label: ".jpg", type: "image" as const },
-  { value: "jpeg", label: ".jpeg", type: "image" as const },
-  { value: "webp", label: ".webp", type: "image" as const },
-  { value: "gif", label: ".gif", type: "image" as const },
-  { value: "bmp", label: ".bmp", type: "image" as const },
-  { value: "tiff", label: ".tiff", type: "image" as const },
-  { value: "avif", label: ".avif", type: "image" as const },
-  { value: "svg", label: ".svg", type: "image" as const },
-];
-
-const FMT_OPTIONS = [
-  { value: "mp4", label: "mp4", type: "video" as const },
-  { value: "mkv", label: "mkv", type: "video" as const },
-  { value: "avi", label: "avi", type: "video" as const },
-  { value: "mov", label: "mov", type: "video" as const },
-  { value: "webm", label: "webm", type: "video" as const },
-  { value: "m4v", label: "m4v", type: "video" as const },
-  { value: "flv", label: "flv", type: "video" as const },
-  { value: "ogv", label: "ogv", type: "video" as const },
-  { value: "wmv", label: "wmv", type: "video" as const },
-  { value: "gif", label: "gif", type: "video" as const },
-  { value: "mod", label: "mod", type: "video" as const },
-  { value: "mp3", label: "mp3", type: "audio" as const },
-  { value: "flac", label: "flac", type: "audio" as const },
-  { value: "wav", label: "wav", type: "audio" as const },
-  { value: "aac", label: "aac", type: "audio" as const },
-  { value: "ogg", label: "ogg", type: "audio" as const },
-  { value: "opus", label: "opus", type: "audio" as const },
-  { value: "wma", label: "wma", type: "audio" as const },
-  { value: "m4a", label: "m4a", type: "audio" as const },
-  { value: "aiff", label: "aiff", type: "audio" as const },
-  { value: "ac3", label: "ac3", type: "audio" as const },
-  { value: "png", label: "png", type: "image" as const },
-  { value: "jpeg", label: "jpeg", type: "image" as const },
-  { value: "webp", label: "webp", type: "image" as const },
-  { value: "bmp", label: "bmp", type: "image" as const },
-  { value: "tiff", label: "tiff", type: "image" as const },
-  { value: "avif", label: "avif", type: "image" as const },
-];
 
 function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -125,6 +61,9 @@ export default function BatchConvertPage() {
   const loadDirRef = useRef<any>(null);
   const fileListRef = useRef<HTMLDivElement>(null);
   const activeRowRef = useRef<HTMLDivElement>(null);
+  const logPanelRef = useRef<HTMLDivElement>(null);
+
+  const extType = EXT_OPTIONS.find((e) => e.value === inputExt)?.type;
 
   useEffect(() => {
     if (activeRowRef.current && fileListRef.current) {
@@ -132,16 +71,17 @@ export default function BatchConvertPage() {
     }
   }, [progress?.current_file]);
 
-  const filteredFmt = FMT_OPTIONS.filter((o) => {
-    const extOpt = EXT_OPTIONS.find((e) => e.value === inputExt);
-    return !extOpt || o.type === extOpt.type;
-  });
+  useEffect(() => {
+    if (logPanelRef.current) {
+      logPanelRef.current.scrollTop = logPanelRef.current.scrollHeight;
+    }
+  }, [log]);
 
   useEffect(() => {
-    if (!filteredFmt.some((o) => o.value === outputFmt)) {
-      setOutputFmt(filteredFmt[0]?.value ?? "mp4");
+    if (!FMT_OPTIONS.some((o) => o.type === extType && o.value === outputFmt)) {
+      setOutputFmt(FMT_OPTIONS.find((o) => o.type === extType)?.value ?? "mp4");
     }
-  }, [inputExt, filteredFmt]);
+  }, [extType]);
 
   useEffect(() => {
     if (!converting && progress && (progress.done + progress.failed) > 0) {
@@ -235,6 +175,19 @@ export default function BatchConvertPage() {
   }, []);
 
   useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    (async () => {
+      unlisten = await listen<{ message: string }>(
+        "batch-log",
+        (e) => {
+          setLog((prev) => [...prev, e.payload.message]);
+        },
+      );
+    })();
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+
+  useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
     (async () => {
       unlisteners.push(
@@ -320,18 +273,21 @@ export default function BatchConvertPage() {
       <div className="batch-format-row">
         <div className="card batch-card">
           <label className="label">input extension</label>
-          <CustomSelect
+          <Dropdown
             options={EXT_OPTIONS}
             value={inputExt}
             onChange={setInputExt}
+            showCategories
           />
         </div>
         <div className="card batch-card">
           <label className="label">output format</label>
-          <CustomSelect
-            options={filteredFmt}
+          <Dropdown
+            options={FMT_OPTIONS}
             value={outputFmt}
             onChange={setOutputFmt}
+            showCategories
+            filterType={extType}
           />
         </div>
       </div>
@@ -357,7 +313,7 @@ export default function BatchConvertPage() {
             onMouseEnter={() => setConvBtnHover(true)}
             onMouseLeave={() => setConvBtnHover(false)}
           >
-            {converting ? "converting..." : <ScrambleText text={`convert ${files.length} file${files.length !== 1 ? "s" : ""}`} trigger={convBtnHover} ticks={4} />}
+            {converting ? "converting..." : <ScrambleText text={`convert ${matchingCount} file${matchingCount !== 1 ? "s" : ""}`} trigger={convBtnHover} ticks={4} />}
           </button>
           {converting && (
             <button className="btn btn-cancel" onClick={() => invoke("cancel_conversion")} title="cancel">
@@ -431,7 +387,7 @@ export default function BatchConvertPage() {
             </div>
 
             {log.length > 0 && (
-              <div className="log-panel">
+              <div className="log-panel" ref={logPanelRef}>
                 {log.map((l, i) => <div key={i} className="log-line">{l}</div>)}
               </div>
             )}

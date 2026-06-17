@@ -75,8 +75,8 @@ export default function ScrambleText({
   }, [trigger, run]);
 
   useEffect(() => {
-    if (!hover && trigger === undefined) setDisplay(text);
-  }, [text, hover, trigger]);
+    if (!active) setDisplay(text);
+  }, [text, active]);
 
   return (
     <Tag
