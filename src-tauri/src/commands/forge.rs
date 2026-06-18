@@ -100,7 +100,7 @@ pub async fn export_timeline(
         if *c { Err("export cancelled".to_string()) } else { Ok(()) }
     }
 
-    // ── 1. Render video clips (no audio) ──
+    // ── 1. Render video clips (no audio) with gaps as black ──
 
     let mut processed_v = vclips.clone();
     for i in (0..processed_v.len()).rev() {
@@ -119,12 +119,40 @@ pub async fn export_timeline(
         }
     }
 
-    let mut vid_concat: Vec<String> = Vec::new();
+    processed_v.sort_by(|a, b| a.start_time.partial_cmp(&b.start_time).unwrap());
 
-    for (i, clip) in processed_v.iter().enumerate() {
+    let mut vid_concat: Vec<String> = Vec::new();
+    let mut seg_counter = 0u32;
+    let mut cursor = 0.0;
+
+    for clip in &processed_v {
         is_cancelled()?;
 
-        let part_path = temp_dir.join(format!("vid_{:04}.ts", i));
+        // Black segment for gap before this clip
+        if clip.start_time > cursor + 0.001 {
+            let gap_dur = clip.start_time - cursor;
+            let black_path = temp_dir.join(format!("seg_{:04}.ts", seg_counter));
+            seg_counter += 1;
+            let bpath = black_path.to_string_lossy().to_string();
+
+            let black_args = vec![
+                "-y".to_string(),
+                "-f".to_string(), "lavfi".to_string(),
+                "-i".to_string(), format!("color=c=black:s={}x{}:d={}", project.width, project.height, gap_dur),
+                "-an".to_string(),
+                "-c:v".to_string(), "libx264".to_string(),
+                "-preset".to_string(), preset.to_string(),
+                "-crf".to_string(), crf.to_string(),
+                "-pix_fmt".to_string(), "yuv420p".to_string(),
+                bpath.clone(),
+            ];
+            run_conversion(&black_args, gap_dur)?;
+            vid_concat.push(format!("file '{}'", bpath.replace('\\', "\\\\")));
+        }
+
+        // Process this clip
+        let part_path = temp_dir.join(format!("seg_{:04}.ts", seg_counter));
+        seg_counter += 1;
         let inter_path = part_path.to_string_lossy().to_string();
         let dur = clip.source_end - clip.source_start;
 
@@ -159,11 +187,12 @@ pub async fn export_timeline(
         run_conversion(&args, dur)?;
 
         vid_concat.push(format!("file '{}'", inter_path.replace('\\', "\\\\")));
+        cursor = clip.start_time + clip.duration;
         steps_done += 1.0;
         update_progress(&app_handle, steps_done, total_steps as f64);
     }
 
-    // Concat video parts into temp file
+    // Concat all video parts (clips + black gaps) into temp file
     let vcat_path = temp_dir.join("vcat.txt");
     std::fs::write(&vcat_path, vid_concat.join("\n")).map_err(|e| e.to_string())?;
     let vtemp = temp_dir.join("video_temp.ts");

@@ -17,6 +17,9 @@ export default function VideoPreview() {
   const fpsRef = useRef(30);
   const isSwitchingRef = useRef(false);
   const onTimeUpdateRef = useRef<() => void>(() => {});
+  const gapRafRef = useRef<number | null>(null);
+  const gapPrevTimeRef = useRef(0);
+  const gapModeRef = useRef(false);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasError, setHasError] = useState<string | null>(null);
@@ -41,13 +44,13 @@ export default function VideoPreview() {
 
   const timelineToSource = useCallback(
     (clip: ForgeClip, t: number) =>
-      clip.sourceStart + Math.max(0, t - clip.startTime) / clip.speed,
+      clip.sourceStart + Math.max(0, t - clip.startTime) * clip.speed,
     [],
   );
 
   const sourceToTimeline = useCallback(
     (clip: ForgeClip, t: number) =>
-      clip.startTime + (t - clip.sourceStart) * clip.speed,
+      clip.startTime + (t - clip.sourceStart) / clip.speed,
     [],
   );
 
@@ -194,6 +197,7 @@ export default function VideoPreview() {
   const handleTimeUpdateInternal = useCallback(() => {
     if (!playingRef.current) return;
     if (isSwitchingRef.current) return;
+    if (gapModeRef.current) return;
     const vid = videoRef.current;
     if (!vid || vid.readyState < HTMLMediaElement.HAVE_METADATA) return;
     const a = clipsRef.current;
@@ -230,9 +234,44 @@ export default function VideoPreview() {
     const found = findClipAt(endedTime);
     if (!found) {
       vid.pause();
-      playingRef.current = false;
-      setIsPlaying(false);
+      if (gapRafRef.current !== null) {
+        cancelAnimationFrame(gapRafRef.current);
+        gapRafRef.current = null;
+      }
+      gapModeRef.current = true;
+      playheadTimeRef.current = endedTime;
+      gapPrevTimeRef.current = performance.now();
       isSwitchingRef.current = false;
+
+      const advanceGap = (now: number) => {
+        if (!gapModeRef.current || !playingRef.current) {
+          gapModeRef.current = false;
+          return;
+        }
+        const dt = (now - gapPrevTimeRef.current) / 1000;
+        gapPrevTimeRef.current = now;
+        const newTime = playheadTimeRef.current + dt;
+        setPlayhead(newTime);
+
+        const nextClip = findClipAt(newTime);
+        if (nextClip) {
+          gapModeRef.current = false;
+          currentClipIdxRef.current = nextClip.index;
+          const v = videoRef.current;
+          if (v) {
+            v.playbackRate = nextClip.clip.speed;
+            pointVideoAt(v, nextClip.clip, newTime, () => {
+              if (playingRef.current) v.play().catch(() => {});
+            });
+          }
+          preloadNext(nextClip.index);
+          return;
+        }
+
+        gapRafRef.current = requestAnimationFrame(advanceGap);
+      };
+
+      gapRafRef.current = requestAnimationFrame(advanceGap);
       return;
     }
 
@@ -252,15 +291,18 @@ export default function VideoPreview() {
         vid.onloadedmetadata = () => {
           isSwitchingRef.current = false;
           vid.currentTime = pre.currentTime;
+          vid.playbackRate = found.clip.speed;
           if (playingRef.current) vid.play().catch(() => {});
         };
       } else {
         vid.currentTime = pre.currentTime;
+        vid.playbackRate = found.clip.speed;
         if (playingRef.current) vid.play().catch(() => {});
         isSwitchingRef.current = false;
       }
     } else {
       pointVideoAt(vid, found.clip, endedTime, () => {
+        vid.playbackRate = found.clip.speed;
         if (playingRef.current) vid.play().catch(() => {});
         isSwitchingRef.current = false;
       });
@@ -331,6 +373,11 @@ export default function VideoPreview() {
 
   const togglePlay = useCallback(() => {
     isSwitchingRef.current = false;
+    if (gapRafRef.current !== null) {
+      cancelAnimationFrame(gapRafRef.current);
+      gapRafRef.current = null;
+    }
+    gapModeRef.current = false;
     if (playingRef.current) {
       playingRef.current = false;
       setIsPlaying(false);
@@ -374,6 +421,7 @@ export default function VideoPreview() {
     syncAudio(t);
 
     pointVideoAt(vid, found.clip, t, () => {
+      vid.playbackRate = found.clip.speed;
       vid.play().catch(() => {
         playingRef.current = false;
         setIsPlaying(false);
@@ -383,6 +431,11 @@ export default function VideoPreview() {
 
   const seek = useCallback(
     (time: number) => {
+      if (gapRafRef.current !== null) {
+        cancelAnimationFrame(gapRafRef.current);
+        gapRafRef.current = null;
+      }
+      gapModeRef.current = false;
       isSwitchingRef.current = false;
       playingRef.current = false;
       setIsPlaying(false);
@@ -433,6 +486,11 @@ export default function VideoPreview() {
   useEffect(() => {
     return () => {
       playingRef.current = false;
+      gapModeRef.current = false;
+      if (gapRafRef.current !== null) {
+        cancelAnimationFrame(gapRafRef.current);
+        gapRafRef.current = null;
+      }
       const vid = videoRef.current;
       if (vid) vid.pause();
       const aud = audioRef.current;
@@ -441,6 +499,9 @@ export default function VideoPreview() {
   }, []);
 
   const hasVideo = clips.length > 0 || audioClips.length > 0;
+  const isOnClip = clips.some(
+    (c) => playheadTime >= c.startTime && playheadTime < c.startTime + c.duration
+  );
   const totalDuration = clips.reduce(
     (m, c) => Math.max(m, c.startTime + c.duration),
     0,
@@ -466,6 +527,7 @@ export default function VideoPreview() {
               muted
               preload="auto"
               className="forge-preview-video"
+              style={{ opacity: isOnClip ? 1 : 0 }}
               onTimeUpdate={onTimeUpdate}
               onEnded={() => {
                 playingRef.current = false;

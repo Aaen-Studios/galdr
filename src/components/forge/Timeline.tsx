@@ -11,6 +11,7 @@ export default function Timeline() {
   const setZoom = useForgeStore((s) => s.setZoom);
   const moveClip = useForgeStore((s) => s.moveClip);
   const trimClip = useForgeStore((s) => s.trimClip);
+  const updateClip = useForgeStore((s) => s.updateClip);
   const selectClip = useForgeStore((s) => s.selectClip);
   const splitClipAtPlayhead = useForgeStore((s) => s.splitClipAtPlayhead);
   const snapEnabled = useForgeStore((s) => s.snapEnabled);
@@ -94,8 +95,9 @@ export default function Timeline() {
           if (!clip) return;
           const dt = (e.clientX - dragging.startX!) / zoom;
           const newSourceStart = Math.max(0, dragging.origSourceStart! + dt * clip.speed);
+          const newStartTime = Math.max(0, dragging.origVal! + dt);
           if (newSourceStart < clip.sourceEnd - 0.05) {
-            trimClip(dragging.clipId, newSourceStart, clip.sourceEnd, dragging.track);
+            updateClip(dragging.clipId, { sourceStart: newSourceStart, startTime: newStartTime }, dragging.track);
           }
         } else if (dragging.type === "trim-end" && dragging.clipId && dragging.track) {
           const trackData = dragging.track === "video" ? project.videoTrack : project.audioTrack;
@@ -107,7 +109,7 @@ export default function Timeline() {
         }
       }
     },
-    [dragging, zoom, snapTime, setPlayhead, moveClip, trimClip, project]
+    [dragging, zoom, snapTime, setPlayhead, moveClip, trimClip, updateClip, project]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -134,6 +136,7 @@ export default function Timeline() {
           clipId,
           track,
           startX: e.clientX,
+          origVal: clip.startTime,
           origSourceStart: clip.sourceStart,
         });
       } else if (isTrimEnd) {
