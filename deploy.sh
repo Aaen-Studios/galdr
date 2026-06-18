@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eu
 
 # ─── galdr deploy script ───────────────────────────────────────────────
 # Usage:  ./deploy.sh [new_version]
@@ -30,6 +30,15 @@ if [ "$VERSION" != "$CURRENT_VERSION" ]; then
 else
   echo "✓ Version: $VERSION"
 fi
+
+# Confirm version actually changed in the files
+CONFIRMED="$(grep '"version"' src-tauri/tauri.conf.json | head -1 | sed 's/.*: *"\(.*\)".*/\1/')"
+echo "  (tauri.conf.json version: $CONFIRMED)"
+
+# Remove stale MSI from prior runs so the new build can't be confused
+rm -f src-tauri/target/release/bundle/msi/*.msi
+rm -f src-tauri/target/release/bundle/msi/*.msi.zip
+rm -f src-tauri/target/release/bundle/msi/*.exe
 
 # ── Platform detection ──────────────────────────────────────────────
 OS="$(uname -s)"
@@ -122,47 +131,74 @@ bun install
 bun tauri build
 echo "✓ Build complete."
 
-# ── Locate artifacts ────────────────────────────────────────────────
+# ── Locate artifacts & create archive ─────────────────────────────────
+echo "  Checking for artifacts in src-tauri/target/release/bundle/msi/ ..."
+ls -la src-tauri/target/release/bundle/msi/ 2>/dev/null || echo "  (no msi dir yet)"
 case "$PLATFORM" in
   windows)
     BUNDLE_DIR="src-tauri/target/release/bundle/msi"
-    # Tauri v2 can produce both MSI and NSIS; pick MSI for the updater archive
-    INSTALLER="$(ls "$BUNDLE_DIR"/*.msi 2>/dev/null | head -1 || true)"
-    ARCHIVE="${INSTALLER}.zip"
-    if [ -n "$INSTALLER" ] && [ ! -f "$ARCHIVE" ]; then
-      echo "⟳ Creating $ARCHIVE ..."
-      if command -v zip &>/dev/null; then
-        (cd "$BUNDLE_DIR" && zip "$(basename "$ARCHIVE")" "$(basename "$INSTALLER")")
-      else
-        powershell -Command "Compress-Archive -Path \"$INSTALLER\" -DestinationPath \"$ARCHIVE\" -Force"
-      fi
+    INSTALLER=""
+    for f in "$BUNDLE_DIR"/*.msi; do
+      [ -f "$f" ] && INSTALLER="$f" && break
+    done
+    if [ -z "$INSTALLER" ]; then
+      echo "! No .msi found in $BUNDLE_DIR/ — check build output."
+      exit 1
     fi
+    ARCHIVE="${INSTALLER}.zip"
+    echo "⟳ Creating $ARCHIVE ..."
+    rm -f "$ARCHIVE"
+    # Write a temp .ps1 to avoid quote escaping issues in Git Bash
+    TMPPS="$(dirname "$ARCHIVE")/_mkzip.ps1"
+    echo "Compress-Archive -Path '$INSTALLER' -DestinationPath '$ARCHIVE' -Force" > "$TMPPS"
+    powershell -ExecutionPolicy Bypass -File "$TMPPS"
+    rm -f "$TMPPS"
     ;;
   linux)
-    # Prefer AppImage, fall back to deb
     BUNDLE_DIR="src-tauri/target/release/bundle/appimage"
-    INSTALLER="$(ls "$BUNDLE_DIR"/*.AppImage 2>/dev/null | head -1 || true)"
+    INSTALLER=""
+    for f in "$BUNDLE_DIR"/*.AppImage; do
+      [ -f "$f" ] && INSTALLER="$f" && break
+    done
     if [ -z "$INSTALLER" ]; then
       BUNDLE_DIR="src-tauri/target/release/bundle/deb"
-      INSTALLER="$(ls "$BUNDLE_DIR"/*.deb 2>/dev/null | head -1 || true)"
+      for f in "$BUNDLE_DIR"/*.deb; do
+        [ -f "$f" ] && INSTALLER="$f" && break
+      done
+    fi
+    if [ -z "$INSTALLER" ]; then
+      echo "! No installer found in appimage/ or deb/ — check build output."
+      exit 1
     fi
     ARCHIVE="${INSTALLER}.tar.gz"
-    if [ -n "$INSTALLER" ] && [ ! -f "$ARCHIVE" ]; then
-      echo "⟳ Creating $ARCHIVE ..."
-      tar czf "$ARCHIVE" -C "$(dirname "$INSTALLER")" "$(basename "$INSTALLER")"
-    fi
+    echo "⟳ Creating $ARCHIVE ..."
+    rm -f "$ARCHIVE"
+    tar czf "$ARCHIVE" -C "$(dirname "$INSTALLER")" "$(basename "$INSTALLER")"
     ;;
   macos)
     BUNDLE_DIR="src-tauri/target/release/bundle/dmg"
-    INSTALLER="$(ls "$BUNDLE_DIR"/*.dmg 2>/dev/null | head -1 || true)"
-    # Fallback: .app.tar.gz (Tauri can produce this too)
+    INSTALLER=""
+    for f in "$BUNDLE_DIR"/*.dmg; do
+      [ -f "$f" ] && INSTALLER="$f" && break
+    done
     if [ -z "$INSTALLER" ]; then
       BUNDLE_DIR="src-tauri/target/release/bundle/macos"
-      INSTALLER="$(ls "$BUNDLE_DIR"/*.app.tar.gz 2>/dev/null | head -1 || true)"
-      ARCHIVE="${INSTALLER}"  # already compressed
+      for f in "$BUNDLE_DIR"/*.app.tar.gz; do
+        [ -f "$f" ] && INSTALLER="$f" && break
+      done
+      if [ -n "$INSTALLER" ]; then
+        ARCHIVE="$INSTALLER"
+        echo "  (already compressed: $(basename "$ARCHIVE"))"
+      fi
     else
       ARCHIVE="${INSTALLER}.gz"
-      [ ! -f "$ARCHIVE" ] && gzip -c "$INSTALLER" > "$ARCHIVE"
+      echo "⟳ Creating $ARCHIVE ..."
+      rm -f "$ARCHIVE"
+      gzip -c "$INSTALLER" > "$ARCHIVE"
+    fi
+    if [ -z "${INSTALLER:-}" ]; then
+      echo "! No .dmg or .app.tar.gz found — check build output."
+      exit 1
     fi
     ;;
 esac
@@ -175,6 +211,21 @@ fi
 
 echo "  Installer: $INSTALLER"
 echo "  Archive:   $ARCHIVE"
+
+# Verify archive exists
+if [ -f "$ARCHIVE" ]; then
+  echo "✓ Archive created: $(du -h "$ARCHIVE" | cut -f1)"
+else
+  echo "! Archive NOT created at $ARCHIVE"
+  echo "  Creating manually with PowerShell..."
+  powershell -NoProfile -Command "& { Compress-Archive -Path '$INSTALLER' -DestinationPath '$ARCHIVE' -Force }"
+  if [ -f "$ARCHIVE" ]; then
+    echo "✓ Created manually."
+  else
+    echo "! Still failed. Run this manually after the script:"
+    echo "  Compress-Archive -Path '$INSTALLER' -DestinationPath '$ARCHIVE' -Force"
+  fi
+fi
 
 # ── Sign ────────────────────────────────────────────────────────────
 echo ""
