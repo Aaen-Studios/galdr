@@ -44,8 +44,60 @@ function deepClone<T>(obj: T): T {
   return JSON.parse(JSON.stringify(obj));
 }
 
-function sortClips(track: ForgeTrack) {
-  track.clips.sort((a, b) => a.startTime - b.startTime);
+function mkSplit(original: ForgeClip, newStart: number, newEnd: number): ForgeClip {
+  const newDuration = newEnd - newStart;
+  const newSourceStart = original.sourceStart + (newStart - original.startTime) * original.speed;
+  const newSourceEnd = original.sourceStart + (newEnd - original.startTime) * original.speed;
+  return {
+    ...original,
+    id: crypto.randomUUID(),
+    startTime: newStart,
+    duration: newDuration,
+    sourceStart: newSourceStart,
+    sourceEnd: newSourceEnd,
+    selected: false,
+  };
+}
+
+function resolveTrackOverlap(clips: ForgeClip[], placed: ForgeClip): ForgeClip[] {
+  const pStart = placed.startTime;
+  const pEnd = placed.startTime + placed.duration;
+  const result: ForgeClip[] = [];
+
+  for (const c of clips) {
+    if (c.id === placed.id) continue;
+
+    const cStart = c.startTime;
+    const cEnd = c.startTime + c.duration;
+
+    if (pEnd <= cStart || pStart >= cEnd) {
+      result.push(c);
+      continue;
+    }
+
+    if (pStart <= cStart && pEnd >= cEnd) {
+      continue;
+    }
+
+    if (pStart > cStart && pEnd < cEnd) {
+      result.push(mkSplit(c, cStart, pStart));
+      result.push(mkSplit(c, pEnd, cEnd));
+      continue;
+    }
+
+    if (pStart > cStart) {
+      result.push(mkSplit(c, cStart, pStart));
+      continue;
+    }
+
+    if (pEnd < cEnd) {
+      result.push(mkSplit(c, pEnd, cEnd));
+      continue;
+    }
+  }
+
+  result.push(placed);
+  return result.sort((a, b) => a.startTime - b.startTime);
 }
 
 interface ForgeState {
@@ -56,6 +108,7 @@ interface ForgeState {
   isExporting: boolean;
   exportProgress: number;
   snapEnabled: boolean;
+  clipVersion: number;
   dragPayload: { id: string; path: string; duration: number; name: string } | null;
 
   pushUndo: () => void;
@@ -99,6 +152,7 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
   isExporting: false,
   exportProgress: 0,
   snapEnabled: true,
+  clipVersion: 0,
   dragPayload: null,
 
   pushUndo: () => {
@@ -109,41 +163,47 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
   },
 
   undo: () => {
-    const { project, undoStack, redoStack } = get();
+    const { project, undoStack, redoStack, clipVersion } = get();
     if (undoStack.length === 0) return;
     const prev = undoStack[undoStack.length - 1];
     set({
       project: deepClone(prev),
       undoStack: undoStack.slice(0, -1),
       redoStack: [...redoStack, deepClone(project)],
+      clipVersion: clipVersion + 1,
     });
   },
 
   redo: () => {
-    const { project, undoStack, redoStack } = get();
+    const { project, undoStack, redoStack, clipVersion } = get();
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
     set({
       project: deepClone(next),
       undoStack: [...undoStack, deepClone(project)],
       redoStack: redoStack.slice(0, -1),
+      clipVersion: clipVersion + 1,
     });
   },
 
   addClipToVideo: (clip) => {
     get().pushUndo();
     const track = get().project.videoTrack;
-    track.clips.push(clip);
-    sortClips(track);
-    set({ project: { ...get().project } });
+    const newClips = resolveTrackOverlap(track.clips, clip);
+    set({
+      project: { ...get().project, videoTrack: { ...track, clips: newClips } },
+      clipVersion: get().clipVersion + 1,
+    });
   },
 
   addClipToAudio: (clip) => {
     get().pushUndo();
     const track = get().project.audioTrack;
-    track.clips.push(clip);
-    sortClips(track);
-    set({ project: { ...get().project } });
+    const newClips = resolveTrackOverlap(track.clips, clip);
+    set({
+      project: { ...get().project, audioTrack: { ...track, clips: newClips } },
+      clipVersion: get().clipVersion + 1,
+    });
   },
 
   moveClip: (clipId, newStartTime, trackKey) => {
@@ -151,34 +211,47 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
     const track = get().project[trackKey === "video" ? "videoTrack" : "audioTrack"];
     const clip = track.clips.find((c) => c.id === clipId);
     if (!clip) return;
-    clip.startTime = Math.max(0, newStartTime);
-    track.clips = track.clips.filter((c) => c.id !== clipId);
-    track.clips.push(clip);
-    sortClips(track);
-    set({ project: { ...get().project } });
+    const moved = { ...clip, startTime: Math.max(0, newStartTime) };
+    const others = track.clips.filter((c) => c.id !== clipId);
+    const newClips = resolveTrackOverlap(others, moved);
+    const trackKeyInner = trackKey === "video" ? "videoTrack" : "audioTrack";
+    set({
+      project: { ...get().project, [trackKeyInner]: { ...track, clips: newClips } },
+      clipVersion: get().clipVersion + 1,
+    });
   },
 
   trimClip: (clipId, sourceStart, sourceEnd, trackKey) => {
     get().pushUndo();
     const track = get().project[trackKey === "video" ? "videoTrack" : "audioTrack"];
-    const clip = track.clips.find((c) => c.id === clipId);
-    if (!clip) return;
-    clip.sourceStart = Math.max(0, sourceStart);
-    clip.sourceEnd = sourceEnd > clip.sourceStart ? sourceEnd : clip.sourceStart + 0.1;
-    clip.duration = (clip.sourceEnd - clip.sourceStart) / clip.speed;
-    set({ project: { ...get().project } });
+    const found = track.clips.find((c) => c.id === clipId);
+    if (!found) return;
+    const ss = Math.max(0, sourceStart);
+    const se = sourceEnd > ss ? sourceEnd : ss + 0.1;
+    const updated = { ...found, sourceStart: ss, sourceEnd: se, duration: (se - ss) / found.speed };
+    const others = track.clips.filter((c) => c.id !== clipId);
+    const newClips = resolveTrackOverlap(others, updated);
+    const trackKeyInner = trackKey === "video" ? "videoTrack" : "audioTrack";
+    set({
+      project: { ...get().project, [trackKeyInner]: { ...track, clips: newClips } },
+      clipVersion: get().clipVersion + 1,
+    });
   },
 
   splitClipAtPlayhead: () => {
     get().pushUndo();
     const { project } = get();
     const ph = project.playheadTime;
+    let vClips = project.videoTrack.clips;
+    let aClips = project.audioTrack.clips;
     let modified = false;
 
-    for (const trackKey of ["videoTrack", "audioTrack"] as const) {
-      const track = project[trackKey];
-      const clip = track.clips.find(
-        (c) => ph >= c.startTime && ph < c.startTime + c.duration
+    for (const [, clips, setter] of [
+      ["videoTrack", vClips, (arr: ForgeClip[]) => { vClips = arr; }] as const,
+      ["audioTrack", aClips, (arr: ForgeClip[]) => { aClips = arr; }] as const,
+    ]) {
+      const clip = clips.find(
+        (c: ForgeClip) => ph >= c.startTime && ph < c.startTime + c.duration
       );
       if (!clip) continue;
 
@@ -186,30 +259,45 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
       const sourceOffset = clip.sourceStart + splitOffset * clip.speed;
       if (sourceOffset <= clip.sourceStart || sourceOffset >= clip.sourceEnd) continue;
 
-      const rightClip: ForgeClip = deepClone({
+      const rightClip: ForgeClip = {
         ...clip,
         id: crypto.randomUUID(),
         startTime: ph,
         duration: clip.duration - splitOffset,
         sourceStart: sourceOffset,
         selected: false,
-      });
-      clip.duration = splitOffset;
-      clip.sourceEnd = sourceOffset;
-
-      track.clips.push(rightClip);
-      sortClips(track);
+      };
+      const leftClip = { ...clip, duration: splitOffset, sourceEnd: sourceOffset, selected: false };
+      setter(
+        clips
+          .filter((c: ForgeClip) => c.id !== clip.id)
+          .concat([leftClip, rightClip])
+          .sort((a: ForgeClip, b: ForgeClip) => a.startTime - b.startTime)
+      );
       modified = true;
     }
 
-    if (modified) set({ project: { ...project } });
+    if (modified) {
+      set({
+        project: {
+          ...project,
+          videoTrack: { ...project.videoTrack, clips: vClips },
+          audioTrack: { ...project.audioTrack, clips: aClips },
+        },
+        clipVersion: get().clipVersion + 1,
+      });
+    }
   },
 
   deleteClip: (clipId, trackKey) => {
     get().pushUndo();
     const track = get().project[trackKey === "video" ? "videoTrack" : "audioTrack"];
-    track.clips = track.clips.filter((c) => c.id !== clipId);
-    set({ project: { ...get().project } });
+    const newClips = track.clips.filter((c) => c.id !== clipId);
+    const trackKeyInner = trackKey === "video" ? "videoTrack" : "audioTrack";
+    set({
+      project: { ...get().project, [trackKeyInner]: { ...track, clips: newClips } },
+      clipVersion: get().clipVersion + 1,
+    });
   },
 
   rippleDeleteClip: (clipId, trackKey) => {
@@ -220,35 +308,55 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
     if (idx === -1) return;
     const removed = track.clips[idx];
     const gap = removed.duration;
-    track.clips = track.clips.filter((c) => c.id !== clipId);
-    for (let i = idx; i < track.clips.length; i++) {
-      track.clips[i].startTime -= gap;
-    }
-    set({ project: { ...project } });
+    const newClips = track.clips
+      .filter((c) => c.id !== clipId)
+      .map((c, i) =>
+        i >= idx ? { ...c, startTime: c.startTime - gap } : c
+      );
+    const trackKeyInner = trackKey === "video" ? "videoTrack" : "audioTrack";
+    set({
+      project: { ...project, [trackKeyInner]: { ...track, clips: newClips } },
+      clipVersion: get().clipVersion + 1,
+    });
   },
 
   selectClip: (clipId, trackKey) => {
     const project = get().project;
-    for (const key of ["videoTrack", "audioTrack"] as const) {
-      const matchesTrack = (key === "videoTrack" && trackKey === "video") ||
-        (key === "audioTrack" && trackKey === "audio");
-      for (const c of project[key].clips) {
-        c.selected = matchesTrack && c.id === clipId;
-      }
-    }
-    set({ project: { ...project } });
+    const newVT = {
+      ...project.videoTrack,
+      clips: project.videoTrack.clips.map((c) => ({
+        ...c,
+        selected: trackKey === "video" && c.id === clipId,
+      })),
+    };
+    const newAT = {
+      ...project.audioTrack,
+      clips: project.audioTrack.clips.map((c) => ({
+        ...c,
+        selected: trackKey === "audio" && c.id === clipId,
+      })),
+    };
+    set({ project: { ...project, videoTrack: newVT, audioTrack: newAT } });
   },
 
   updateClip: (clipId, changes, trackKey) => {
     get().pushUndo();
     const track = get().project[trackKey === "video" ? "videoTrack" : "audioTrack"];
-    const clip = track.clips.find((c) => c.id === clipId);
-    if (!clip) return;
-    Object.assign(clip, changes);
-    if (changes.speed !== undefined) {
-      clip.duration = (clip.sourceEnd - clip.sourceStart) / clip.speed;
+    const found = track.clips.find((c) => c.id === clipId);
+    if (!found) return;
+    const updated = { ...found, ...changes };
+    if (changes.speed !== undefined || changes.sourceStart !== undefined || changes.sourceEnd !== undefined) {
+      updated.duration = (updated.sourceEnd - updated.sourceStart) / updated.speed;
     }
-    set({ project: { ...get().project } });
+    const timingChanged = changes.startTime !== undefined || changes.speed !== undefined ||
+      changes.sourceStart !== undefined || changes.sourceEnd !== undefined;
+    const others = track.clips.filter((c) => c.id !== clipId);
+    const newClips = timingChanged ? resolveTrackOverlap(others, updated) : [...others, updated];
+    const trackKeyInner = trackKey === "video" ? "videoTrack" : "audioTrack";
+    set({
+      project: { ...get().project, [trackKeyInner]: { ...track, clips: newClips } },
+      clipVersion: get().clipVersion + 1,
+    });
   },
 
   setPlayhead: (time) => set((s) => ({ project: { ...s.project, playheadTime: Math.max(0, time) } })),
@@ -354,6 +462,7 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
         mediaLibrary: deepClone((file.extensions?.mediaLibrary as MediaLibraryItem[]) || []),
         undoStack: [],
         redoStack: [],
+        clipVersion: get().clipVersion + 1,
       });
     } catch {}
   },
@@ -366,6 +475,7 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
       redoStack: [],
       isExporting: false,
       exportProgress: 0,
+      clipVersion: get().clipVersion + 1,
     });
   },
 

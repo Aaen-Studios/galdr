@@ -37,6 +37,8 @@ pub fn run() {
             commands::apply_rune_tag,
             commands::update_discord_presence,
             commands::set_discord_enabled,
+            commands::pre_render_timeline,
+            commands::delete_temp_file,
             commands::export_timeline,
             commands::cancel_forge_export,
             commands::save_project_file,

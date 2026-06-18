@@ -1,12 +1,12 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { save } from "@tauri-apps/plugin-dialog";
 import VideoPreview from "../components/forge/VideoPreview";
 import SourceBrowser from "../components/forge/SourceBrowser";
 import Timeline from "../components/forge/Timeline";
 import PropertiesPanel from "../components/forge/PropertiesPanel";
 import { useForgeStore, isDragActive, endDrag } from "../store/forgeStore";
-import { useGaldrStore } from "../store";
 import "./ForgePage.css";
 
 export default function ForgePage() {
@@ -33,6 +33,11 @@ export default function ForgePage() {
   const [previewHeight, setPreviewHeight] = useState(360);
   const [resizing, setResizing] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
+
+  const [showExportOptions, setShowExportOptions] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"mp4" | "mkv">("mp4");
+  const [exportQuality, setExportQuality] = useState<"high" | "medium" | "fast">("medium");
+  const [exportResolution, setExportResolution] = useState<"source" | "1080p" | "720p">("source");
 
   const selectedClip =
     project.videoTrack.clips.find((c) => c.selected) ||
@@ -234,15 +239,23 @@ export default function ForgePage() {
     };
   }, [resizing]);
 
-  const handleCast = useCallback(async () => {
+  const handleExport = useCallback(async () => {
     try {
+      const filters = exportFormat === "mp4"
+        ? [{ name: "MP4 Video", extensions: ["mp4"] }]
+        : [{ name: "MKV Video", extensions: ["mkv"] }];
+      const path = await save({
+        filters,
+        defaultPath: `timeline_export.${exportFormat}`,
+      });
+      if (!path) return;
+
+      setShowExportOptions(false);
       setExporting(true);
       setExportProgress(0);
       const unlisten = await listen<{ progress: number }>("forge-export-progress", (e) => {
         setExportProgress(e.payload.progress);
       });
-
-      const outputDir = useGaldrStore.getState().outputDir || "~/Desktop/galdr-output";
 
       await invoke("export_timeline", {
         project: {
@@ -253,7 +266,12 @@ export default function ForgePage() {
           audio_track: project.audioTrack,
           zoom_level: project.zoomLevel,
         },
-        outputDir,
+        options: {
+          output_path: path,
+          format: exportFormat,
+          quality: exportQuality,
+          resolution: exportResolution,
+        },
       });
 
       unlisten();
@@ -263,7 +281,7 @@ export default function ForgePage() {
       console.error("Export failed:", err);
       setExporting(false);
     }
-  }, [project, setExporting, setExportProgress]);
+  }, [project, exportFormat, exportQuality, exportResolution, setExporting, setExportProgress]);
 
   return (
     <div className="forge-page">
@@ -308,20 +326,62 @@ export default function ForgePage() {
           </button>
           <button
             className="forge-btn forge-btn-cast"
-            onClick={handleCast}
+            onClick={() => setShowExportOptions(true)}
             disabled={isExporting || project.videoTrack.clips.length === 0}
           >
-            {isExporting ? `ᚲ casting ${Math.round(exportProgress * 100)}%` : "ᚲ cast"}
+            {isExporting ? `exporting ${Math.round(exportProgress * 100)}%` : "ᚲ export"}
           </button>
         </div>
         <Timeline />
       </div>
 
+      {showExportOptions && !isExporting && (
+        <div className="forge-export-overlay">
+          <div className="forge-export-options">
+            <span className="forge-export-rune">ᚲ</span>
+            <span className="forge-export-title">export options</span>
+
+            <div className="forge-export-field">
+              <label>format</label>
+              <select value={exportFormat} onChange={(e) => setExportFormat(e.target.value as any)}>
+                <option value="mp4">MP4</option>
+                <option value="mkv">MKV</option>
+              </select>
+            </div>
+
+            <div className="forge-export-field">
+              <label>quality</label>
+              <select value={exportQuality} onChange={(e) => setExportQuality(e.target.value as any)}>
+                <option value="high">High (slow)</option>
+                <option value="medium">Medium</option>
+                <option value="fast">Fast</option>
+              </select>
+            </div>
+
+            <div className="forge-export-field">
+              <label>resolution</label>
+              <select value={exportResolution} onChange={(e) => setExportResolution(e.target.value as any)}>
+                <option value="source">Source</option>
+                <option value="1080p">1080p</option>
+                <option value="720p">720p</option>
+              </select>
+            </div>
+
+            <div className="forge-export-actions">
+              <button className="forge-btn" onClick={() => setShowExportOptions(false)}>cancel</button>
+              <button className="forge-btn forge-btn-cast" onClick={handleExport}>
+                choose destination...
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isExporting && (
         <div className="forge-export-overlay">
           <div className="forge-export-modal">
             <span className="forge-export-rune">ᚲ</span>
-            <span className="forge-export-title">casting timeline...</span>
+            <span className="forge-export-title">exporting timeline...</span>
             <div className="progress-bar-container">
               <div
                 className="progress-bar"
