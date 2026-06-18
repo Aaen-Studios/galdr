@@ -1032,3 +1032,97 @@
   background: var(--fg-dim);
   width: 80px;
 }
+
+/* ── Unsaved Changes Dot ── */
+.forge-unsaved-dot {
+  color: var(--fg);
+  margin-right: 3px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ── Load / Recent Files ── */
+.forge-load-wrapper {
+  position: relative;
+  display: flex;
+}
+
+.forge-recent-toggle {
+  border-left: none;
+  padding: 3px 5px;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.forge-recent-popup {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: var(--bg);
+  border: 1px solid var(--fg-faint);
+  min-width: 300px;
+  max-width: 400px;
+  z-index: 100;
+  margin-top: 2px;
+}
+
+.forge-recent-header {
+  display: block;
+  padding: 6px 12px 4px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--fg-faint);
+  border-bottom: 1px solid var(--fg-faint);
+}
+
+.forge-recent-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--fg-faint);
+  color: var(--fg);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.1s;
+}
+
+.forge-recent-item:hover {
+  background: var(--bg-dim);
+}
+
+.forge-recent-item:last-child {
+  border-bottom: none;
+}
+
+.forge-recent-name {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.forge-recent-path {
+  display: block;
+  font-size: 9px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+/* ── Confirm Dialog ── */
+.forge-confirm-modal {
+  max-width: 380px;
+}
+
+.forge-confirm-message {
+  font-size: 12px;
+  color: var(--fg-dim);
+  text-align: center;
+  line-height: 1.5;
+  letter-spacing: 0.03em;
+}

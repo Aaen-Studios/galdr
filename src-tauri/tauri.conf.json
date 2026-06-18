@@ -37,6 +37,13 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["galdr"],
+        "name": "Galdr Project",
+        "description": "Galdr video editor project file"
+      }
+    ],
     "resources": [
       "binaries/*"
     ],

@@ -157,3 +157,9 @@ export interface MediaLibraryItem {
   width?: number;
   height?: number;
 }
+
+export interface RecentFileEntry {
+  path: string;
+  name: string;
+  updated: string;
+}

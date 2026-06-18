@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ForgeClip, ForgeTrack, ForgeProjectData, MediaLibraryItem, GaldrProjectFile } from "../types";
+import type { ForgeClip, ForgeTrack, ForgeProjectData, MediaLibraryItem, GaldrProjectFile, RecentFileEntry } from "../types";
 import { invoke } from "@tauri-apps/api/core";
 import { save, open } from "@tauri-apps/plugin-dialog";
 
@@ -20,6 +20,8 @@ export function endDrag(): typeof _dragPayload {
   return p;
 }
 export function isDragActive() { return _dragActive; }
+
+let _confirmResolve: ((value: boolean) => void) | null = null;
 
 const MAX_UNDO = 50;
 
@@ -115,6 +117,10 @@ interface ForgeState {
   snapEnabled: boolean;
   clipVersion: number;
   dragPayload: { id: string; path: string; duration: number; name: string } | null;
+  currentFilePath: string | null;
+  isModified: boolean;
+  recentFiles: RecentFileEntry[];
+  confirmDialog: { message: string; title: string } | null;
 
   pushUndo: () => void;
   undo: () => void;
@@ -141,7 +147,12 @@ interface ForgeState {
   importMediaFiles: () => Promise<void>;
   saveProject: () => Promise<void>;
   loadProject: () => Promise<void>;
-  resetProject: () => void;
+  loadProjectFromPath: (path: string) => Promise<void>;
+  addRecentFile: (path: string) => void;
+  loadRecentFiles: () => void;
+  showConfirmDialog: (message: string, title: string) => Promise<boolean>;
+  closeConfirmDialog: (result: boolean) => void;
+  resetProject: () => Promise<void>;
 
   setExporting: (v: boolean) => void;
   setExportProgress: (v: number) => void;
@@ -169,12 +180,16 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
   snapEnabled: true,
   clipVersion: 0,
   dragPayload: null,
+  currentFilePath: null,
+  isModified: false,
+  recentFiles: [],
+  confirmDialog: null,
 
   pushUndo: () => {
     const { project, undoStack } = get();
     const stack = [...undoStack, deepClone(project)];
     if (stack.length > MAX_UNDO) stack.shift();
-    set({ undoStack: stack, redoStack: [] });
+    set({ undoStack: stack, redoStack: [], isModified: true });
   },
 
   undo: () => {
@@ -186,6 +201,7 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
       undoStack: undoStack.slice(0, -1),
       redoStack: [...redoStack, deepClone(project)],
       clipVersion: clipVersion + 1,
+      isModified: true,
     });
   },
 
@@ -198,6 +214,7 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
       undoStack: [...undoStack, deepClone(project)],
       redoStack: redoStack.slice(0, -1),
       clipVersion: clipVersion + 1,
+      isModified: true,
     });
   },
 
@@ -387,7 +404,7 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
   addMarker: (time, label) => {
     const markers = [...get().project.markers, { time, label: label || "" }];
     markers.sort((a, b) => a.time - b.time);
-    set((s) => ({ project: { ...s.project, markers } }));
+    set((s) => ({ project: { ...s.project, markers }, isModified: true }));
   },
 
   removeMarker: (time) => {
@@ -396,18 +413,19 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
         ...s.project,
         markers: s.project.markers.filter((m) => m.time !== time),
       },
+      isModified: true,
     }));
   },
 
   addToLibrary: (item) => {
     set((s) => {
       if (s.mediaLibrary.some((x) => x.path === item.path)) return s;
-      return { mediaLibrary: [...s.mediaLibrary, item] };
+      return { mediaLibrary: [...s.mediaLibrary, item], isModified: true };
     });
   },
 
   removeFromLibrary: (id) => {
-    set((s) => ({ mediaLibrary: s.mediaLibrary.filter((x) => x.id !== id) }));
+    set((s) => ({ mediaLibrary: s.mediaLibrary.filter((x) => x.id !== id), isModified: true }));
   },
 
   importMediaFiles: async () => {
@@ -447,25 +465,42 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
 
   saveProject: async () => {
     try {
-      const { project, mediaLibrary } = get();
+      const { project, mediaLibrary, currentFilePath } = get();
       const now = new Date().toISOString();
+
+      let dest = currentFilePath;
+      if (!dest) {
+        dest = await save({
+          filters: [{ name: "Galdr Project", extensions: ["galdr"] }],
+          defaultPath: "untitled.galdr",
+        });
+        if (!dest) return;
+      }
+
+      let created = now;
+      if (currentFilePath) {
+        try {
+          const raw = await invoke<string>("load_project_file", { path: currentFilePath });
+          const existing: GaldrProjectFile = JSON.parse(raw);
+          created = existing.created;
+        } catch {}
+      }
+
+      const name = dest.split(/[/\\]/).pop() || "untitled";
       const file: GaldrProjectFile = {
         version: "1.0",
         type: "galdr-project",
         app: "forge",
-        name: "untitled",
-        created: now,
+        name,
+        created,
         updated: now,
         data: deepClone(project),
         extensions: { mediaLibrary: deepClone(mediaLibrary) },
       };
-      const dest = await save({
-        filters: [{ name: "Galdr Project", extensions: ["galdr"] }],
-        defaultPath: "untitled.galdr",
-      });
-      if (!dest) return;
       const content = JSON.stringify(file, null, 2);
       await invoke("save_project_file", { path: dest, content });
+      set({ currentFilePath: dest, isModified: false });
+      get().addRecentFile(dest);
     } catch {}
   },
 
@@ -476,7 +511,21 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
         filters: [{ name: "Galdr Project", extensions: ["galdr"] }],
       });
       if (!selected) return;
-      const raw = await invoke<string>("load_project_file", { path: selected as string });
+      await get().loadProjectFromPath(selected as string);
+    } catch {}
+  },
+
+  loadProjectFromPath: async (path: string) => {
+    if (get().isModified) {
+      if (await get().showConfirmDialog("Save changes before opening another project?", "Unsaved Changes")) {
+        await get().saveProject();
+        if (get().isModified) return;
+      }
+    } else {
+      if (!await get().showConfirmDialog("Open this project? Current work on this project will be discarded.", "Open Project")) return;
+    }
+    try {
+      const raw = await invoke<string>("load_project_file", { path });
       const file: GaldrProjectFile = JSON.parse(raw);
       if (file.type !== "galdr-project") return;
       set({
@@ -484,12 +533,47 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
         mediaLibrary: deepClone((file.extensions?.mediaLibrary as MediaLibraryItem[]) || []),
         undoStack: [],
         redoStack: [],
+        currentFilePath: path,
+        isModified: false,
         clipVersion: get().clipVersion + 1,
       });
+      get().addRecentFile(path);
     } catch {}
   },
 
-  resetProject: () => {
+  addRecentFile: (path: string) => {
+    const name = path.split(/[/\\]/).pop() || path;
+    const entry: RecentFileEntry = { path, name, updated: new Date().toISOString() };
+    const existing = get().recentFiles.filter((f) => f.path !== path);
+    const updated = [entry, ...existing].slice(0, 5);
+    set({ recentFiles: updated });
+    try { localStorage.setItem("forge-recent-files", JSON.stringify(updated)); } catch {}
+  },
+
+  loadRecentFiles: () => {
+    try {
+      const raw = localStorage.getItem("forge-recent-files");
+      if (raw) set({ recentFiles: JSON.parse(raw) });
+    } catch {}
+  },
+
+  showConfirmDialog: (message: string, title: string) => {
+    return new Promise<boolean>((resolve) => {
+      _confirmResolve = resolve;
+      set({ confirmDialog: { message, title } });
+    });
+  },
+
+  closeConfirmDialog: (result: boolean) => {
+    _confirmResolve?.(result);
+    _confirmResolve = null;
+    set({ confirmDialog: null });
+  },
+
+  resetProject: async () => {
+    if (get().isModified) {
+      if (!await get().showConfirmDialog("Discard unsaved changes? Any unsaved work will be lost.", "Unsaved Changes")) return;
+    }
     set({
       project: createEmptyProject(),
       mediaLibrary: [],
@@ -502,6 +586,8 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
       isRendering: false,
       renderProgress: 0,
       renderResultPath: null,
+      currentFilePath: null,
+      isModified: false,
       clipVersion: get().clipVersion + 1,
     });
   },
@@ -516,3 +602,6 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
   setSnapEnabled: (v) => set({ snapEnabled: v }),
   setDragPayload: (payload) => set({ dragPayload: payload }),
 }));
+
+// Load recent files from localStorage on store init
+useForgeStore.getState().loadRecentFiles();

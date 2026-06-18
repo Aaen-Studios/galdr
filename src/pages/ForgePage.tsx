@@ -7,6 +7,7 @@ import VideoPreview from "../components/forge/VideoPreview";
 import SourceBrowser from "../components/forge/SourceBrowser";
 import Timeline from "../components/forge/Timeline";
 import PropertiesPanel from "../components/forge/PropertiesPanel";
+import ConfirmDialog from "../components/forge/ConfirmDialog";
 import { useForgeStore, isDragActive, endDrag } from "../store/forgeStore";
 import "./ForgePage.css";
 
@@ -27,6 +28,7 @@ export default function ForgePage() {
   const setPlayhead = useForgeStore((s) => s.setPlayhead);
   const saveProject = useForgeStore((s) => s.saveProject);
   const loadProject = useForgeStore((s) => s.loadProject);
+  const loadProjectFromPath = useForgeStore((s) => s.loadProjectFromPath);
   const resetProject = useForgeStore((s) => s.resetProject);
   const setExporting = useForgeStore((s) => s.setExporting);
   const setExportProgress = useForgeStore((s) => s.setExportProgress);
@@ -40,6 +42,9 @@ export default function ForgePage() {
   const addToLibrary = useForgeStore((s) => s.addToLibrary);
   const addClipToVideo = useForgeStore((s) => s.addClipToVideo);
   const addClipToAudio = useForgeStore((s) => s.addClipToAudio);
+  const isModified = useForgeStore((s) => s.isModified);
+  const currentFilePath = useForgeStore((s) => s.currentFilePath);
+  const recentFiles = useForgeStore((s) => s.recentFiles);
 
   const [previewHeight, setPreviewHeight] = useState(360);
   const [resizing, setResizing] = useState(false);
@@ -50,6 +55,7 @@ export default function ForgePage() {
   const [exportQuality, setExportQuality] = useState<"high" | "medium" | "fast">("medium");
   const [exportResolution, setExportResolution] = useState<"source" | "1080p" | "720p">("source");
   const [exportDest, setExportDest] = useState<string | null>(null);
+  const [showRecent, setShowRecent] = useState(false);
 
   const selectedClip =
     project.videoTrack.clips.find((c) => c.selected) ||
@@ -70,6 +76,9 @@ export default function ForgePage() {
       } else if (e.key === "z" && e.ctrlKey) {
         e.preventDefault();
         undo();
+      } else if (e.key === "s" && e.ctrlKey) {
+        e.preventDefault();
+        saveProject();
       } else if (e.key === "s" && !e.ctrlKey) {
         e.preventDefault();
         splitClipAtPlayhead();
@@ -115,7 +124,7 @@ export default function ForgePage() {
         }
       }
     },
-    [undo, redo, splitClipAtPlayhead, deleteClip, rippleDeleteClip, selectedClip, selectedTrack, setPlayhead, updateClip, project]
+    [undo, redo, saveProject, splitClipAtPlayhead, deleteClip, rippleDeleteClip, selectedClip, selectedTrack, setPlayhead, updateClip, project]
   );
 
   useEffect(() => {
@@ -129,6 +138,10 @@ export default function ForgePage() {
     (async () => {
       unlistenDrop = await listen<{ paths: string[] }>("tauri://drag-drop", async (e) => {
         for (const path of e.payload.paths) {
+          if (path.toLowerCase().endsWith(".galdr")) {
+            await loadProjectFromPath(path);
+            continue;
+          }
           try {
             const info = await invoke<{ duration: number; width?: number; height?: number }>("get_media_info", { path });
             const name = path.split(/[/\\]/).pop() || path;
@@ -148,7 +161,30 @@ export default function ForgePage() {
       });
     })();
     return () => { unlistenDrop?.(); };
-  }, [addToLibrary]);
+  }, [addToLibrary, loadProjectFromPath]);
+
+  // Listen for .galdr files opened via OS file association
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    (async () => {
+      unlisten = await listen<string>("tauri://open-file", (event) => {
+        const path = event.payload;
+        if (path.toLowerCase().endsWith(".galdr")) {
+          loadProjectFromPath(path);
+        }
+      });
+    })();
+    return () => { unlisten?.(); };
+  }, [loadProjectFromPath]);
+
+  // Update window title with project name
+  useEffect(() => {
+    const name = currentFilePath
+      ? currentFilePath.split(/[/\\]/).pop() || "Untitled"
+      : "Forge";
+    const dot = isModified ? " •" : "";
+    document.title = `${name}${dot} - forge - Galdr`;
+  }, [currentFilePath, isModified]);
 
   // Custom pointer-based drag from SourceBrowser to Timeline
   useEffect(() => {
@@ -354,6 +390,68 @@ export default function ForgePage() {
 
   return (
     <div className="forge-page">
+      <div className="forge-bottom-bar">
+        <span className="forge-bottom-label">
+          {isModified && <span className="forge-unsaved-dot">•</span>}
+          ᚲ forge
+        </span>
+        <span className="forge-bottom-info">
+          {currentFilePath
+            ? currentFilePath.split(/[/\\]/).pop()
+            : `${project.videoTrack.clips.length} clips · ${
+                Math.round(
+                  project.videoTrack.clips.reduce((s, c) => s + c.duration, 0) * 10
+                ) / 10
+              }s`}
+        </span>
+        <div className="forge-bottom-spacer" />
+        <button className="forge-btn" onClick={saveProject} title="Save project (Ctrl+S)">
+          {isModified ? "ᛟ save*" : currentFilePath ? "ᛟ save" : "ᛟ save as..."}
+        </button>
+        <div className="forge-load-wrapper">
+          <button className="forge-btn" onClick={loadProject} title="Load project">
+            ᚨ load
+          </button>
+          {recentFiles.length > 0 && (
+            <button className="forge-btn forge-recent-toggle" onClick={() => setShowRecent(!showRecent)}>
+              ▾
+            </button>
+          )}
+          {showRecent && (
+            <div className="forge-recent-popup">
+              <span className="forge-recent-header">recent</span>
+              {recentFiles.map((f) => (
+                <button
+                  key={f.path}
+                  className="forge-recent-item"
+                  onClick={() => { loadProjectFromPath(f.path); setShowRecent(false); }}
+                >
+                  <span className="forge-recent-name">{f.name}</span>
+                  <span className="forge-recent-path">{f.path}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button className="forge-btn" onClick={resetProject} title="New project">
+          ᚷ new
+        </button>
+        <button className="forge-btn" onClick={importMediaFiles} title="Import media">
+          + media
+        </button>
+        <button
+          className="forge-btn forge-btn-cast"
+          onClick={() => setShowExportOptions(true)}
+          disabled={isBusy || project.videoTrack.clips.length === 0}
+        >
+          {isExporting
+            ? `exporting ${Math.round(exportProgress * 100)}%`
+            : isRendering
+              ? `rendering ${Math.round(renderProgress * 100)}%`
+              : "ᚲ export"}
+        </button>
+      </div>
+
       <div className="forge-top">
         <SourceBrowser />
         <div className="forge-center">
@@ -372,39 +470,6 @@ export default function ForgePage() {
       </div>
 
       <div className="forge-bottom">
-        <div className="forge-bottom-bar">
-          <span className="forge-bottom-label">ᚲ forge</span>
-          <span className="forge-bottom-info">
-            {project.videoTrack.clips.length} clips ·{" "}
-            {Math.round(
-              project.videoTrack.clips.reduce((s, c) => s + c.duration, 0) * 10
-            ) / 10}s
-          </span>
-          <div className="forge-bottom-spacer" />
-          <button className="forge-btn" onClick={saveProject} title="Save project (Ctrl+S)">
-            ᛟ save
-          </button>
-          <button className="forge-btn" onClick={loadProject} title="Load project">
-            ᚨ load
-          </button>
-          <button className="forge-btn" onClick={resetProject} title="New project">
-            ᚷ new
-          </button>
-          <button className="forge-btn" onClick={importMediaFiles} title="Import media">
-            + media
-          </button>
-          <button
-            className="forge-btn forge-btn-cast"
-            onClick={() => setShowExportOptions(true)}
-            disabled={isBusy || project.videoTrack.clips.length === 0}
-          >
-            {isExporting
-              ? `exporting ${Math.round(exportProgress * 100)}%`
-              : isRendering
-                ? `rendering ${Math.round(renderProgress * 100)}%`
-                : "ᚲ export"}
-          </button>
-        </div>
         <Timeline />
       </div>
 
@@ -555,6 +620,8 @@ export default function ForgePage() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog />
     </div>
   );
 }
