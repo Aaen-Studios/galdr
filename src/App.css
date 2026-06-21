@@ -181,7 +181,7 @@ body {
 }
 
 .page {
-  max-width: 720px;
+  max-width: 960px;
   margin: 0 auto;
 }
 
@@ -297,11 +297,39 @@ body {
   padding: 4px 0;
 }
 
-/* Batch Page */
-.batch-page.page {
-  max-width: 960px;
+/* Mode Tabs (file / batch toggle) */
+.mode-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--fg-faint);
 }
 
+.mode-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: var(--fg-dim);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 8px 20px;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.mode-tab:hover {
+  color: var(--fg);
+}
+
+.mode-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--fg);
+}
+
+/* Batch layout (inside ConvertPage & CompressPage) */
 .batch-layout {
   display: flex;
   gap: 24px;
@@ -425,7 +453,7 @@ body {
   word-break: break-all;
 }
 
-.batch-page.dragging {
+.batch-dragging {
   outline: 1px solid var(--fg);
   outline-offset: -12px;
   background: var(--bg-dim);
@@ -909,6 +937,85 @@ body {
   width: 36px;
   text-align: right;
   flex-shrink: 0;
+}
+
+/* ── Mode Toggle (quality / target size) ── */
+.mode-toggle-group {
+  display: flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border: 1px solid var(--fg-faint);
+  align-self: flex-start;
+}
+
+.mode-toggle-btn {
+  background: transparent;
+  border: none;
+  padding: 4px 14px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  font-family: inherit;
+  border-bottom: 1px solid transparent;
+}
+
+.mode-toggle-btn:hover {
+  color: var(--fg);
+}
+
+.mode-toggle-btn.active {
+  color: var(--fg);
+  border-bottom-color: var(--fg);
+}
+
+/* ── Target Size Input ── */
+.target-size-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.target-size-input {
+  width: 100px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.target-size-unit-group {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--fg-faint);
+}
+
+.target-size-unit-btn {
+  background: transparent;
+  border: none;
+  padding: 4px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: color 0.15s;
+  font-family: inherit;
+}
+
+.target-size-unit-btn:hover {
+  color: var(--fg);
+}
+
+.target-size-unit-btn.active {
+  color: var(--fg);
+}
+
+.target-size-info {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  letter-spacing: 0.04em;
 }
 
 /* Estimate Bar */

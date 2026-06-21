@@ -11,6 +11,8 @@ export interface ConversionParams {
   crf?: number;
   preset?: string;
   quality?: number;
+  /** Target file size in bytes. When set, enables target-size two-pass encoding. */
+  target_size_bytes?: number;
   trim_start?: number;
   trim_end?: number;
   crop_w?: number;

@@ -449,6 +449,178 @@ fn maybe_mono(args: &mut Vec<String>, quality: f64) {
     }
 }
 
+// ── Target-size / two-pass encoding helpers ──
+
+/// Parse a bitrate string like "128k" or "1M" into bits-per-second.
+fn parse_bitrate(s: &str) -> u64 {
+    let s = s.trim().to_lowercase();
+    if let Some(num) = s.strip_suffix("k") {
+        (num.parse::<f64>().unwrap_or(128.0) * 1000.0) as u64
+    } else if let Some(num) = s.strip_suffix("m") {
+        (num.parse::<f64>().unwrap_or(1.0) * 1_000_000.0) as u64
+    } else {
+        s.parse::<u64>().unwrap_or(128_000)
+    }
+}
+
+/// Format a bitrate in bps to ffmpeg's "k" suffix string (e.g. 128000 → "128k").
+fn format_bitrate(bps: u64) -> String {
+    let kbps = (bps as f64 / 1000.0).round().max(1.0) as u64;
+    format!("{}k", kbps)
+}
+
+/// Return a sensible default video codec for the given output format,
+/// used during two-pass encoding where pass 1 needs an explicit codec.
+fn default_video_codec(format: &str) -> Option<String> {
+    match format {
+        "mp4" | "m4v" | "mov" | "3gp" | "avi" | "flv" | "ts" => Some("libx264".to_string()),
+        "mkv" => Some("libx265".to_string()),
+        "webm" => Some("libvpx-vp9".to_string()),
+        "ogv" => Some("libtheora".to_string()),
+        "wmv" => Some("wmv2".to_string()),
+        _ => None,
+    }
+}
+
+/// Build first-pass and second-pass argument vectors for two-pass encoding
+/// targeting a specific output file size.
+///
+/// * `duration` — the **effective** duration of the output (accounting for trim),
+///   in seconds. The caller is responsible for computing this.
+///
+/// Returns `(pass1_args, pass2_args)`.
+///
+/// * **Video**: proper two-pass with `-b:v` / `-b:a` derived from the target size.
+/// * **Audio-only / GIF**: single pass with precise audio bitrate (`-b:a`).
+/// * **Image formats**: falls back to quality-mode `build_args()` (no size targeting).
+pub fn build_two_pass_args(
+    params: &ConversionParams,
+    duration: f64,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let target_bytes = params
+        .target_size_bytes
+        .ok_or_else(|| "target_size_bytes is required".to_string())?;
+
+    if target_bytes == 0 {
+        return Err("target_size_bytes must be greater than 0".to_string());
+    }
+    if duration <= 0.0 {
+        return Err("Cannot calculate bitrate for target size: unknown duration".to_string());
+    }
+
+    let fmt = params.output_format.to_lowercase();
+
+    // ── Classify output type ──
+    let is_audio = matches!(
+        fmt.as_str(),
+        "mp3" | "aac" | "m4a" | "ogg" | "opus" | "wav" | "aiff" | "flac" | "wma" | "ac3"
+    );
+    let is_image = matches!(fmt.as_str(), "jpg" | "jpeg" | "png" | "webp" | "avif" | "bmp" | "tiff");
+
+    // ── Calculate target bitrate ──
+    let total_bits = (target_bytes as f64) * 8.0;
+    // 95 % headroom for container / muxing overhead
+    let target_bitrate_bps = (total_bits / duration) * 0.95;
+
+    // Audio bitrate: user-explicit → quality-derived → fallback 128 kbps
+    let audio_bps: u64 = if let Some(ref ab) = params.audio_bitrate {
+        parse_bitrate(ab)
+    } else {
+        params
+            .quality
+            .map(|q| parse_bitrate(&audio_bitrate(q)))
+            .unwrap_or(128_000)
+    };
+
+    // ── Images: not suitable for size targeting → quality fallback ──
+    if is_image {
+        return Ok((vec![], build_args(params)));
+    }
+
+    // ── Audio-only / GIF: single pass ──
+    if is_audio || fmt == "gif" {
+        // Target audio bitrate clamped to sensible range
+        let audio_target = (target_bitrate_bps.max(16_000.0)) as u64;
+        let mut single_params = params.clone();
+        single_params.audio_bitrate = Some(format_bitrate(audio_target));
+        return Ok((vec![], build_args(&single_params)));
+    }
+
+    // ── Video: two-pass encoding ──
+    let video_bps = if (audio_bps as f64) >= target_bitrate_bps {
+        // Audio alone meets or exceeds the target – still encode video at floor
+        100_000u64
+    } else {
+        ((target_bitrate_bps - audio_bps as f64).max(100_000.0)) as u64
+    };
+
+    let video_br = format_bitrate(video_bps);
+    let audio_br = format_bitrate(audio_bps);
+
+    // Resolve video codec (user explicit → format default)
+    let vcodec = params
+        .video_codec
+        .clone()
+        .or_else(|| default_video_codec(&fmt));
+
+    let null_device = if cfg!(windows) {
+        "NUL".to_string()
+    } else {
+        "/dev/null".to_string()
+    };
+
+    // ── Pass 1: analysis only, no audio, no output file ──
+    let mut pass1: Vec<String> = Vec::new();
+    pass1.push("-y".to_string());
+    if let Some(start) = params.trim_start {
+        if start > 0.0 {
+            pass1.push("-ss".to_string());
+            pass1.push(start.to_string());
+        }
+    }
+    pass1.push("-i".to_string());
+    pass1.push(params.input_path.to_string_lossy().to_string());
+    if let Some(ref c) = vcodec {
+        pass1.push("-c:v".to_string());
+        pass1.push(c.clone());
+    }
+    pass1.push("-b:v".to_string());
+    pass1.push(video_br.clone());
+    pass1.push("-pass".to_string());
+    pass1.push("1".to_string());
+    // Trim end on pass 1 so analysis matches pass 2
+    if let Some(end) = params.trim_end {
+        if end > 0.0 {
+            pass1.push("-to".to_string());
+            pass1.push(end.to_string());
+        }
+    }
+    pass1.push("-an".to_string());
+    pass1.push("-f".to_string());
+    pass1.push("null".to_string());
+    pass1.push(null_device);
+
+    // ── Pass 2: encode with bitrate targeting ──
+    // Set video_bitrate + audio_bitrate so build_args skips CRF/quality-derived
+    // audio bitrate in the format-specific section.
+    let mut pass2_params = params.clone();
+    pass2_params.video_bitrate = Some(video_br);
+    pass2_params.audio_bitrate = Some(audio_br);
+    // Ensure the resolved codec is explicit so both passes match
+    if let Some(ref c) = vcodec {
+        pass2_params.video_codec = Some(c.clone());
+    }
+
+    let mut pass2 = build_args(&pass2_params);
+    // Insert -pass 2 right after -y
+    if pass2.first().map(|s| s.as_str()) == Some("-y") {
+        pass2.insert(1, "-pass".to_string());
+        pass2.insert(2, "2".to_string());
+    }
+
+    Ok((pass1, pass2))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

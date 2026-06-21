@@ -15,6 +15,10 @@ pub struct ConversionParams {
     pub crf: Option<u8>,
     pub preset: Option<String>,
     pub quality: Option<f64>,
+    /// Target file size in bytes. When set, enables target-size mode
+    /// (two-pass encoding for video, bitrate-based for audio).
+    #[serde(default)]
+    pub target_size_bytes: Option<u64>,
     pub trim_start: Option<f64>,
     pub trim_end: Option<f64>,
     pub crop_w: Option<u32>,
@@ -46,6 +50,8 @@ pub struct BatchConversionParams {
     pub input_extension: String,
     pub output_format: String,
     #[serde(default)]
+    pub target_size_bytes: Option<u64>,
+    #[serde(default)]
     pub skip: usize,
 }
 
@@ -71,6 +77,7 @@ impl Default for ConversionParams {
             crf: None,
             preset: None,
             quality: None,
+            target_size_bytes: None,
             trim_start: None,
             trim_end: None,
             crop_w: None,

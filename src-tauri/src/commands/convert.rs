@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use crate::discord_rpc;
-use crate::ffmpeg::{build_args, probe_file, run_conversion};
+use crate::ffmpeg::{build_args, build_two_pass_args, probe_file, run_conversion};
 use crate::models::{BatchConversionParams, ConversionParams, ScannedFile};
 
 pub static CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -50,6 +50,9 @@ pub async fn start_conversion(
 /// emits `conversion-progress` / `conversion-log` events tagged with the
 /// given `job_id`. Used by the manual Convert command (`job_id = "default"`)
 /// and by the watch-folder auto-converter (`job_id = "watch:<folderId>"`).
+///
+/// When `params.target_size_bytes` is set, uses two-pass encoding for video
+/// (single-pass bitrate targeting for audio) instead of the quality slider.
 pub fn run_single_conversion<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     params: ConversionParams,
@@ -58,7 +61,9 @@ pub fn run_single_conversion<R: tauri::Runtime>(
     std::fs::create_dir_all(&params.output_dir)
         .map_err(|e| format!("Failed to create output dir: {}", e))?;
 
-    let duration = probe_file(&params.input_path)
+    let probe_info = probe_file(&params.input_path);
+    let full_duration = probe_info
+        .as_ref()
         .map(|info| info.duration)
         .unwrap_or(0.0);
 
@@ -72,11 +77,116 @@ pub fn run_single_conversion<R: tauri::Runtime>(
         .extension()
         .and_then(|s| s.to_str());
 
+    // Compute effective duration accounting for trim
+    let trim_start = params.trim_start.unwrap_or(0.0);
+    let trim_end = params.trim_end.filter(|&e| e > 0.0).unwrap_or(full_duration);
+    let effective_duration = (trim_end - trim_start).max(1.0);
+
     discord_rpc::set_converting(&file_name, 0.0, &params.output_format, source_format);
 
-    let args = build_args(&params);
-    let events = run_conversion(&args, duration)?;
+    let is_target_size = params.target_size_bytes.is_some();
 
+    let (events, _) = if is_target_size {
+        // ── Target-size mode (two-pass for video, bitrate for audio) ──
+        let (pass1, pass2) = build_two_pass_args(&params, effective_duration)?;
+
+        if !pass1.is_empty() {
+            // Run pass 1 — analysis only
+            let _ = app_handle.emit(
+                "conversion-log",
+                ConversionLogPayload {
+                    message: "pass 1/2 analysis".to_string(),
+                },
+            );
+            let pass1_events = run_conversion(&pass1, effective_duration)?;
+            for ev in &pass1_events {
+                match ev {
+                    crate::ffmpeg::FfmpegEvent::Error(msg) => {
+                        // Clean up pass log files on error
+                        let _ = std::fs::remove_file("ffmpeg2pass-0.log");
+                        let _ = std::fs::remove_file("ffmpeg2pass-0.log.mbtree");
+                        discord_rpc::set_idle();
+                        return Err(msg.clone());
+                    }
+                    _ => {}
+                }
+            }
+
+            let _ = app_handle.emit(
+                "conversion-log",
+                ConversionLogPayload {
+                    message: "pass 2/2 encoding".to_string(),
+                },
+            );
+        }
+
+        // Run pass 2 (or the only pass for audio/GIF)
+        let pass2_events = run_conversion(&pass2, effective_duration)?;
+        let pass2_out = pass2_events.iter().find_map(|ev| {
+            if let crate::ffmpeg::FfmpegEvent::Done(path) = ev {
+                Some(path.clone())
+            } else {
+                None
+            }
+        });
+
+        // Clean up pass log files
+        let _ = std::fs::remove_file("ffmpeg2pass-0.log");
+        let _ = std::fs::remove_file("ffmpeg2pass-0.log.mbtree");
+
+        // Re-emit events for pass 2 (progress, log, done/error)
+        for ev in &pass2_events {
+            match ev {
+                crate::ffmpeg::FfmpegEvent::Progress(p) => {
+                    discord_rpc::set_converting(&file_name, *p, &params.output_format, source_format);
+                    let _ = app_handle.emit(
+                        "conversion-progress",
+                        ConversionProgressPayload {
+                            job_id: job_id.to_string(),
+                            progress: *p,
+                        },
+                    );
+                }
+                crate::ffmpeg::FfmpegEvent::Log(msg) => {
+                    let _ = app_handle.emit(
+                        "conversion-log",
+                        ConversionLogPayload {
+                            message: msg.clone(),
+                        },
+                    );
+                }
+                crate::ffmpeg::FfmpegEvent::Done(path) => {
+                    discord_rpc::track_conversion();
+                    discord_rpc::set_idle();
+                    return Ok(ConversionDonePayload {
+                        job_id: job_id.to_string(),
+                        output_path: path.clone(),
+                    });
+                }
+                crate::ffmpeg::FfmpegEvent::Error(msg) => {
+                    discord_rpc::set_idle();
+                    return Err(msg.clone());
+                }
+            }
+        }
+
+        (pass2_events, pass2_out)
+    } else {
+        // ── Normal quality mode (existing behaviour) ──
+        let args = build_args(&params);
+        let events = run_conversion(&args, effective_duration)?;
+        let output = events.iter().find_map(|ev| {
+            if let crate::ffmpeg::FfmpegEvent::Done(path) = ev {
+                Some(path.clone())
+            } else {
+                None
+            }
+        });
+        (events, output)
+    };
+
+    // Common event emission (only reached for the normal quality path here;
+    // the target-size path returns early above)
     for event in &events {
         match event {
             crate::ffmpeg::FfmpegEvent::Progress(p) => {
@@ -451,13 +561,80 @@ pub async fn start_batch_conversion(
             input_path: input_path.clone(),
             output_dir: params.output_dir.clone(),
             output_format: params.output_format.clone(),
+            target_size_bytes: params.target_size_bytes,
             ..Default::default()
         };
 
-        let args = build_args(&single_params);
+        let is_target_size = single_params.target_size_bytes.is_some();
+
+        let (events, _output_path) = if is_target_size {
+            // ── Target-size: two-pass per file ──
+            // Compute effective duration for this file
+            let trim_start = 0.0;
+            let trim_end = duration;
+            let eff_dur = (trim_end - trim_start).max(1.0);
+
+            let (pass1, pass2) = build_two_pass_args(&single_params, eff_dur)?;
+
+            if !pass1.is_empty() {
+                let _ = app_handle.emit(
+                    "batch-log",
+                    ConversionLogPayload {
+                        message: format!("  {} — pass 1/2 analysis", file_name),
+                    },
+                );
+                let pass1_result: Result<(), String> = (|| {
+                    let evts = run_conversion(&pass1, eff_dur)?;
+                    for e in &evts {
+                        if let crate::ffmpeg::FfmpegEvent::Error(msg) = e {
+                            return Err(msg.clone());
+                        }
+                    }
+                    Ok(())
+                })();
+                if let Err(e) = pass1_result {
+                    // Clean up pass log files
+                    let _ = std::fs::remove_file("ffmpeg2pass-0.log");
+                    let _ = std::fs::remove_file("ffmpeg2pass-0.log.mbtree");
+                    return Err(e);
+                }
+            }
+
+            let result: Result<(Vec<crate::ffmpeg::FfmpegEvent>, Option<String>), String> = (|| {
+                let evts = run_conversion(&pass2, eff_dur)?;
+                let out = evts.iter().find_map(|e| {
+                    if let crate::ffmpeg::FfmpegEvent::Done(p) = e {
+                        Some(p.clone())
+                    } else {
+                        None
+                    }
+                });
+                Ok((evts, out))
+            })();
+
+            // Clean up pass log files
+            let _ = std::fs::remove_file("ffmpeg2pass-0.log");
+            let _ = std::fs::remove_file("ffmpeg2pass-0.log.mbtree");
+
+            result.unwrap_or_else(|e| (vec![crate::ffmpeg::FfmpegEvent::Error(e.clone())], None))
+        } else {
+            // ── Normal quality mode ──
+            let args = build_args(&single_params);
+            let result: Result<(Vec<crate::ffmpeg::FfmpegEvent>, Option<String>), String> = (|| {
+                let evts = run_conversion(&args, duration)?;
+                let out = evts.iter().find_map(|e| {
+                    if let crate::ffmpeg::FfmpegEvent::Done(p) = e {
+                        Some(p.clone())
+                    } else {
+                        None
+                    }
+                });
+                Ok((evts, out))
+            })();
+            result.unwrap_or_else(|e| (vec![crate::ffmpeg::FfmpegEvent::Error(e.clone())], None))
+        };
 
         let result: Result<(), String> = (|| {
-            let events = run_conversion(&args, duration)?;
             for event in &events {
                 match event {
                     crate::ffmpeg::FfmpegEvent::Progress(p) => {

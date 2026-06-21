@@ -22,9 +22,70 @@ function maybeMono(quality: number): string | null {
   return null;
 }
 
-export function buildFFmpegCommand(params: ConversionParams): string {
+/** Parse a bitrate string like "128k" to bps. */
+function parseBitrate(s: string): number {
+  const v = s.trim().toLowerCase();
+  if (v.endsWith("k")) return parseFloat(v) * 1000;
+  if (v.endsWith("m")) return parseFloat(v) * 1_000_000;
+  return parseFloat(v) || 128_000;
+}
+
+/** Format bps to ffmpeg "k" string. */
+function fmtBitrate(bps: number): string {
+  return `${Math.round(Math.max(bps / 1000, 1))}k`;
+}
+
+export function buildFFmpegCommand(params: ConversionParams, duration?: number): string {
   const parts: string[] = ["ffmpeg"];
 
+  const fmt = params.output_format.toLowerCase();
+  const isAudio = ["mp3", "aac", "m4a", "ogg", "opus", "wav", "aiff", "flac", "wma", "ac3"].includes(fmt);
+  const isImage = ["jpg", "jpeg", "png", "webp", "avif", "bmp", "tiff"].includes(fmt);
+
+  // ── Target-size mode ──
+  if (params.target_size_bytes && duration && duration > 0) {
+    const targetBytes = params.target_size_bytes;
+    const totalBits = targetBytes * 8;
+    const targetBitrateBps = (totalBits / duration) * 0.95;
+
+    let audioBps: number;
+    if (params.audio_bitrate) {
+      audioBps = parseBitrate(params.audio_bitrate);
+    } else if (params.quality !== undefined) {
+      audioBps = parseBitrate(audioBitrate(params.quality));
+    } else {
+      audioBps = 128_000;
+    }
+
+    if (isImage) {
+      // Images: fall back to quality mode
+      return buildFFmpegCommand({ ...params, target_size_bytes: undefined }, duration);
+    }
+
+    if (isAudio || fmt === "gif") {
+      // Single pass with audio bitrate targeting
+      const audioTarget = Math.max(targetBitrateBps, 16_000);
+      return buildFFmpegCommand({
+        ...params,
+        target_size_bytes: undefined,
+        audio_bitrate: fmtBitrate(audioTarget),
+      }, duration);
+    }
+
+    // Video: two-pass encoding
+    const videoBps = audioBps >= targetBitrateBps ? 100_000 : Math.max(targetBitrateBps - audioBps, 100_000);
+    const videoBr = fmtBitrate(videoBps);
+    const audioBr = fmtBitrate(audioBps);
+
+    return buildFFmpegCommand({
+      ...params,
+      target_size_bytes: undefined,
+      video_bitrate: videoBr,
+      audio_bitrate: audioBr,
+    }, duration) + "\n# two-pass encode (1st pass: analysis only)";
+  }
+
+  // ── Normal quality mode ──
   parts.push("-y");
 
   if (params.trim_start !== undefined && params.trim_start !== null && params.trim_start > 0) {
@@ -123,8 +184,6 @@ export function buildFFmpegCommand(params: ConversionParams): string {
       );
     }
   }
-
-  const fmt = params.output_format.toLowerCase();
 
   if (params.quality !== undefined && params.quality !== null) {
     switch (fmt) {

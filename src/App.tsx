@@ -6,7 +6,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import HomePage from "./pages/HomePage";
 import ConvertPage from "./pages/ConvertPage";
-import BatchConvertPage from "./pages/BatchConvertPage";
+
 import CompressPage from "./pages/CompressPage";
 import SettingsPage from "./pages/SettingsPage";
 import RunesPage from "./pages/RunesPage";
@@ -33,7 +33,7 @@ const PERSIST_FIELDS: (keyof AppSettings)[] = [
   "outputDir", "transitionStyle", "crtEnabled", "showRuneInTitlebar", "discordEnabled",
 ];
 
-type Page = "home" | "convert" | "batch" | "compress" | "settings" | "runes" | "forge" | "watch";
+type Page = "home" | "convert" | "compress" | "settings" | "runes" | "forge" | "watch";
 
 function AppShell() {
   const [page, setPage] = useState<Page>("home");
@@ -232,13 +232,6 @@ function AppShell() {
     if (page === "convert") {
       return [
         { label: "convert", target: "convert" },
-        { label: "single", target: "convert" },
-      ];
-    }
-    if (page === "batch") {
-      return [
-        { label: "convert", target: "convert" },
-        { label: "batch", target: "batch" },
       ];
     }
     if (page === "compress") {
@@ -270,7 +263,6 @@ function AppShell() {
     e.preventDefault();
     show(e, [
       { label: "quick convert", rune: "ᛏ", action: () => setPage("convert") },
-      { label: "batch convert", rune: "ᚨ", action: () => setPage("batch") },
       { label: "compress", rune: "ᛉ", action: () => setPage("compress") },
       { label: "forge editor", rune: "ᚲ", action: () => setPage("forge") },
       { label: "", rune: "", action: () => {}, divider: true },
@@ -345,7 +337,6 @@ function AppShell() {
         <PageTransition style={transitionStyle} pageKey={page}>
           {page === "home" && <HomePage onNavigate={setPage} />}
           {page === "convert" && <ConvertPage onNavigate={setPage} />}
-          {page === "batch" && <BatchConvertPage onNavigate={setPage} />}
           {page === "compress" && <CompressPage onNavigate={setPage} />}
           {page === "settings" && <SettingsPage onNavigate={setPage} />}
           {page === "runes" && <RunesPage />}

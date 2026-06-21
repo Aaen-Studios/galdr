@@ -7,6 +7,8 @@ interface CommandPreviewProps {
   params: ConversionParams;
   outputDir?: string;
   mediaType?: "video" | "audio" | "image" | null;
+  /** Source media duration in seconds — used for accurate bitrate preview in target-size mode. */
+  duration?: number;
 }
 
 type TokenType = "binary" | "flag" | "value" | "path" | "text";
@@ -57,14 +59,14 @@ function tokenize(cmd: string): Token[] {
   return tokens;
 }
 
-export default function CommandPreview({ params, outputDir }: CommandPreviewProps) {
+export default function CommandPreview({ params, outputDir, duration }: CommandPreviewProps) {
   const cmd = useMemo(() => {
     const merged: ConversionParams = {
       ...params,
       output_dir: outputDir || params.output_dir,
     };
-    return buildFFmpegCommand(merged);
-  }, [params, outputDir]);
+    return buildFFmpegCommand(merged, duration);
+  }, [params, outputDir, duration]);
 
   const tokens = useMemo(() => tokenize(cmd), [cmd]);
 

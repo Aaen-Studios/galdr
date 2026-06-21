@@ -16,9 +16,23 @@ pub fn estimate_compress_size(
     path: String,
     quality: f64,
     output_format: String,
+    target_size_bytes: Option<u64>,
 ) -> Result<CompressEstimate, String> {
     let info = probe_file(Path::new(&path))?;
     let original_size = info.size;
+
+    // When target_size_bytes is set, the estimate is simply the target
+    // (the actual encode will use two-pass bitrate targeting to hit it).
+    if let Some(target) = target_size_bytes {
+        if target > 0 {
+            return Ok(CompressEstimate {
+                original_size,
+                estimated_size: target,
+                can_compress: target < original_size,
+                media_info: info,
+            });
+        }
+    }
 
     let has_video = info.streams.iter().any(|s| s.kind == "video");
     let has_audio = info.streams.iter().any(|s| s.kind == "audio");
