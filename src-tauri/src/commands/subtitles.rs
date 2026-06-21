@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use crate::whisper::{
-    self, find_model, list_models, require_installed_model, run_whisper, WhisperEvent, WhisperModel,
+    self, find_model, list_models, require_installed_model, run_whisper, run_whisper_streaming,
+    WhisperEvent, WhisperModel,
 };
 
 /// Cancel flag shared between the command and `cancel_transcription`.
@@ -241,7 +242,7 @@ pub async fn detect_spoken_language(
     // Look for a "language = xx" line among logs first.
     for ev in &events {
         if let WhisperEvent::Log(msg) = ev {
-            if let Some(code) = extract_language_code(msg) {
+            if let Some(code) = extract_language_code(&msg) {
                 return Ok(DetectedLanguage { language: code });
             }
         }
@@ -377,6 +378,11 @@ pub async fn transcribe_audio(
     args.push("-t".into());
     args.push(threads.to_string());
 
+    // Ask whisper.cpp to emit `progress = N%` lines on stderr so we can drive
+    // the UI progress bar. Without `-pp` it's silent about progress and the
+    // bar would sit idle until completion.
+    args.push("-pp".into());
+
     // Run on a blocking thread so the async command stays responsive.
     let app_clone = app_handle.clone();
     let file_name = input
@@ -405,9 +411,44 @@ pub async fn transcribe_audio(
         },
     );
 
-    let events = tokio::task::spawn_blocking(move || run_whisper(&args, duration))
+    // Stream events to the frontend as they arrive (not buffered at the end)
+    // so the progress bar advances live. Discord RPC is also updated in line.
+    let app_for_emit = app_clone.clone();
+    let file_name_for_emit = file_name.clone();
+    let model_id_for_emit = model_id.clone();
+    let lang_for_emit = lang.clone();
+    let emit = move |ev: &WhisperEvent| match ev {
+        WhisperEvent::Progress(p) => {
+            crate::discord_rpc::set_transcribing(&file_name_for_emit, *p, &model_id_for_emit, &lang_for_emit);
+            let _ = app_for_emit.emit(
+                "transcribe-progress",
+                TranscribeProgressPayload { progress: *p },
+            );
+        }
+        WhisperEvent::Segment(s) => {
+            let _ = app_for_emit.emit(
+                "transcribe-log",
+                TranscribeLogPayload { message: s.clone() },
+            );
+        }
+        WhisperEvent::Log(msg) => {
+            let _ = app_for_emit.emit(
+                "transcribe-log",
+                TranscribeLogPayload { message: msg.clone() },
+            );
+        }
+        WhisperEvent::Error(msg) => {
+            let _ = app_for_emit.emit(
+                "transcribe-log",
+                TranscribeLogPayload { message: format!("! {}", msg) },
+            );
+        }
+        WhisperEvent::Done(_) => {}
+    };
+
+    let run_result = tokio::task::spawn_blocking(move || run_whisper_streaming(&args, duration, emit))
         .await
-        .map_err(|e| format!("transcription task panicked: {}", e))??;
+        .map_err(|e| format!("transcription task panicked: {}", e))?;
 
     if CANCELLED_TRANSCRIPTION.load(Ordering::SeqCst) {
         let _ = std::fs::remove_file(&wav_path);
@@ -415,43 +456,9 @@ pub async fn transcribe_audio(
         return Err("transcription cancelled".to_string());
     }
 
-    // Drain events to the frontend and surface any error.
-    let mut had_error: Option<String> = None;
-    for ev in &events {
-        match ev {
-            WhisperEvent::Progress(p) => {
-                crate::discord_rpc::set_transcribing(&file_name, *p, &model_id, &lang);
-                let _ = app_clone.emit(
-                    "transcribe-progress",
-                    TranscribeProgressPayload { progress: *p },
-                );
-            }
-            WhisperEvent::Segment(s) => {
-                let _ = app_clone.emit(
-                    "transcribe-log",
-                    TranscribeLogPayload {
-                        message: s.clone(),
-                    },
-                );
-            }
-            WhisperEvent::Log(msg) => {
-                let _ = app_clone.emit(
-                    "transcribe-log",
-                    TranscribeLogPayload {
-                        message: msg.clone(),
-                    },
-                );
-            }
-            WhisperEvent::Error(msg) => {
-                if had_error.is_none() {
-                    had_error = Some(msg.clone());
-                }
-            }
-            WhisperEvent::Done(_) => {}
-        }
-    }
-
-    if let Some(err) = had_error {
+    // The streaming runner returns Err on a non-zero exit (with the first
+    // captured error message). Surface it after cleaning up the temp WAV.
+    if let Err(err) = run_result {
         let _ = std::fs::remove_file(&wav_path);
         crate::discord_rpc::set_idle();
         return Err(err);

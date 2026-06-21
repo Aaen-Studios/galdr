@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::models::subtitle::SubtitleStyle;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversionParams {
     #[serde(default)]
@@ -43,6 +45,24 @@ pub struct ConversionParams {
     /// Audio fade-out duration (seconds)
     #[serde(default)]
     pub fade_out: Option<f64>,
+    /// Path to a subtitle file (.srt/.ass/.vtt) to burn into the video.
+    /// Only honoured when `subtitle_mode` is `Some("burn")`.
+    #[serde(default)]
+    pub subtitle_path: Option<PathBuf>,
+    /// `"burn"` renders the subtitles into the video pixels (hardsubs).
+    /// `"embed"` / `"extract"` are handled by dedicated commands, not
+    /// `build_args`, since they need extra `-i` inputs or `-map` flags.
+    #[serde(default)]
+    pub subtitle_mode: Option<String>,
+    /// Burn-in styling. When `None` with a burn mode, FFmpeg's libass
+    /// defaults are used. SRT inputs are converted to ASS in a temp file so
+    /// the style can be injected via `force_style`.
+    #[serde(default)]
+    pub subtitle_style: Option<SubtitleStyle>,
+    /// ISO language tag attached to an embedded subtitle track (e.g. "eng").
+    /// Only used by the embed command, not burn-in.
+    #[serde(default)]
+    pub subtitle_lang: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
