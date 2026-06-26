@@ -61,6 +61,24 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 update_tooltip(app);
             }
             ID_QUIT => {
+                // Record that the window was NOT hidden at shutdown, so the
+                // next launch shows the window normally instead of booting
+                // straight to the tray.
+                let start_hidden = false;
+                if let Some(window) = app.get_webview_window("main") {
+                    if let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) {
+                        let maximized = window.is_maximized().unwrap_or(false);
+                        let state = crate::models::settings::WindowState {
+                            x: position.x,
+                            y: position.y,
+                            width: size.width,
+                            height: size.height,
+                            maximized,
+                            start_hidden,
+                        };
+                        let _ = crate::commands::save_window_state(state);
+                    }
+                }
                 app.exit(0);
             }
             _ => {}

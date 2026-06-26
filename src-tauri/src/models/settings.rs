@@ -136,6 +136,7 @@ fn center_on_monitor(
             width,
             height,
             maximized: false,
+            start_hidden: false,
         }
     } else {
         WindowState {
@@ -144,6 +145,7 @@ fn center_on_monitor(
             width,
             height,
             maximized: false,
+            start_hidden: false,
         }
     }
 }
