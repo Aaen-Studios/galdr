@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
 use tauri::Emitter;
 
 use crate::discord_rpc;
@@ -48,18 +47,12 @@ pub struct ForgeExportOptions {
     pub resolution: String,
 }
 
-static EXPORT_CANCELLED: once_cell::sync::Lazy<Mutex<bool>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(false));
-
 #[tauri::command]
 pub async fn export_timeline(
     app_handle: tauri::AppHandle,
     project: ForgeExportProject,
     options: ForgeExportOptions,
-) -> Result<String, String> {
-    let mut cancelled = EXPORT_CANCELLED.lock().map_err(|e| e.to_string())?;
-    *cancelled = false;
-    drop(cancelled);
+) -> Result<serde_json::Value, String> {
 
     let output_path = PathBuf::from(&options.output_path);
     let temp_dir = std::env::temp_dir().join("galdr-forge");
@@ -79,6 +72,9 @@ pub async fn export_timeline(
         String::new(),
         None,
     );
+    // Acquire a per-job cancel token so `cancel_forge_export` can flip exactly
+    // this job's flag (instead of the old process-wide EXPORT_CANCELLED mutex).
+    let _ = crate::queue::cancel_token::acquire(&job_id);
 
     // Map quality to preset + crf
     let (preset, crf) = match options.quality.as_str() {
@@ -107,9 +103,12 @@ pub async fn export_timeline(
             .ok();
     }
 
-    fn is_cancelled() -> Result<(), String> {
-        let c = EXPORT_CANCELLED.lock().map_err(|e| e.to_string())?;
-        if *c { Err("export cancelled".to_string()) } else { Ok(()) }
+    fn is_cancelled(job_id: &str) -> Result<(), String> {
+        if crate::queue::pids::is_cancelled(job_id) {
+            Err("export cancelled".to_string())
+        } else {
+            Ok(())
+        }
     }
 
     // ── 1. Render video clips (no audio) with gaps as black ──
@@ -138,7 +137,7 @@ pub async fn export_timeline(
     let mut cursor = 0.0;
 
     for clip in &processed_v {
-        is_cancelled()?;
+        is_cancelled(&job_id)?;
 
         // Black segment for gap before this clip
         if clip.start_time > cursor + 0.001 {
@@ -231,7 +230,7 @@ pub async fn export_timeline(
         let mut filter_parts: Vec<String> = Vec::new();
 
         for (i, clip) in aclips.iter().enumerate() {
-            is_cancelled()?;
+            is_cancelled(&job_id)?;
 
             let seg_path = temp_dir.join(format!("aud_{:04}.wav", i));
             let dur = clip.source_end - clip.source_start;
@@ -319,7 +318,7 @@ pub async fn export_timeline(
 
     let out = output_path.to_string_lossy().to_string();
     crate::queue::complete(&app_handle, &job_id, Some(out.clone()), None);
-    Ok(out)
+    Ok(serde_json::json!({ "output_path": out, "job_id": job_id }))
 }
 
 #[tauri::command]
@@ -467,21 +466,11 @@ pub async fn delete_temp_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn cancel_forge_export() -> Result<(), String> {
-    let mut cancelled = EXPORT_CANCELLED.lock().map_err(|e| e.to_string())?;
-    *cancelled = true;
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/IM", "ffmpeg.exe", "/F"])
-            .output();
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = std::process::Command::new("pkill")
-            .args(["-9", "ffmpeg"])
-            .output();
-    }
+pub async fn cancel_forge_export(job_id: String) -> Result<(), String> {
+    // Kill only this export's ffmpeg child (pid-scoped, not image-scoped) and
+    // flip only this job's cancellation token so the polling loops bail out.
+    let _ = crate::queue::pids::kill_job(&job_id);
+    crate::queue::cancel_token::set(&job_id);
     Ok(())
 }
 

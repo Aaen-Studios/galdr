@@ -274,6 +274,7 @@ export interface TranscribeResult {
   vttPath: string | null;
   jsonPath: string | null;
   outputDir: string;
+  jobId: string;
 }
 
 export interface DownloadProgress {

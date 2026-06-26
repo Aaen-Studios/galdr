@@ -1,12 +1,9 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use crate::discord_rpc;
 use crate::ffmpeg::{build_args, build_two_pass_args, probe_file, run_conversion};
 use crate::models::{BatchConversionParams, ConversionParams, ScannedFile};
-
-pub static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, serde::Serialize)]
 #[allow(dead_code)]
@@ -53,6 +50,7 @@ pub async fn start_conversion(
         params.input_path.to_string_lossy().to_string(),
         None,
     );
+    let _ = crate::queue::cancel_token::acquire(&job_id);
 
     let result = run_single_conversion(&app_handle, params, &job_id);
 
@@ -588,7 +586,7 @@ pub struct BatchProgressPayload {
 pub async fn start_batch_conversion(
     app_handle: tauri::AppHandle,
     params: BatchConversionParams,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let extension = params.input_extension.trim_start_matches('.').to_lowercase();
     let mut entries: Vec<PathBuf> = Vec::new();
 
@@ -619,14 +617,16 @@ pub async fn start_batch_conversion(
         None,
     );
 
+    // Acquire a per-job cancel token so `cancel_conversion` can flip exactly
+    // this batch's flag instead of the old process-wide CANCELLED AtomicBool.
+    let _ = crate::queue::cancel_token::acquire(&job_id);
+
     let mut done = 0usize;
     let mut failed = 0usize;
     let done_offset = params.skip;
 
-    CANCELLED.store(false, Ordering::SeqCst);
-
     for input_path in entries.iter().skip(params.skip) {
-        if CANCELLED.load(Ordering::SeqCst) {
+        if crate::queue::pids::is_cancelled(&job_id) {
             break;
         }
         let file_name = input_path
@@ -825,7 +825,7 @@ pub async fn start_batch_conversion(
         crate::queue::complete(&app_handle, &job_id, None, Some(summary));
     }
 
-    Ok(())
+    Ok(job_id)
 }
 
 #[tauri::command]
@@ -854,27 +854,10 @@ pub fn set_discord_enabled(enabled: bool) {
 }
 
 #[tauri::command]
-pub fn cancel_conversion() -> Result<(), String> {
-    CANCELLED.store(true, Ordering::SeqCst);
-    kill_ffmpeg()
-}
-
-pub fn kill_ffmpeg() -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        std::process::Command::new("taskkill")
-            .args(["/IM", "ffmpeg.exe", "/F"])
-            .output()
-            .map(|_| ())
-            .map_err(|e| format!("Failed to kill ffmpeg: {}", e))
-    }
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("pkill")
-            .arg("-9")
-            .arg("ffmpeg")
-            .output()
-            .map(|_| ())
-            .map_err(|e| format!("Failed to kill ffmpeg: {}", e))
-    }
+pub fn cancel_conversion(job_id: String) -> Result<(), String> {
+    // Kill only this conversion's ffmpeg child (pid-scoped, not image-scoped)
+    // and flip only this job's cancellation token so polling loops bail out.
+    let _ = crate::queue::pids::kill_job(&job_id);
+    crate::queue::cancel_token::set(&job_id);
+    Ok(())
 }

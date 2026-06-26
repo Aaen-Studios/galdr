@@ -186,6 +186,19 @@ Build on each platform separately using `deploy.sh [version]`. Each run merges i
 
 ---
 
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Complete system reference — tech stack, module layout, IPC commands, event system, queue architecture, data persistence, known issues |
+| [`docs/AGENTS.md`](docs/AGENTS.md) | Rules for AI agents — mandatory reading, documentation update policy, code conventions, forbidden patterns |
+| [`docs/STYLE_GUIDE.md`](docs/STYLE_GUIDE.md) | Visual design system — colors, typography, spacing, component patterns |
+| [`docs/PLAN.md`](docs/PLAN.md) | Original build plan and feature roadmap |
+
+**For AI agents:** Always read `ARCHITECTURE.md` before making changes, and update it after any structural change. See `AGENTS.md` for the full rules.
+
+---
+
 ## Project Structure
 
 ```

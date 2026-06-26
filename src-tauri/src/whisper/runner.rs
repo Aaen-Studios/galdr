@@ -30,6 +30,7 @@ pub fn run_whisper_streaming<F>(
     args: &[String],
     _duration: f64,
     emit: F,
+    job_id: &str,
 ) -> Result<String, String>
 where
     F: Fn(&WhisperEvent) + Send + Sync + 'static,
@@ -47,6 +48,10 @@ where
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn whisper-cli: {}", e))?;
+
+    // Register the child's pid so `cancel_transcription` / `kill_job` can kill
+    // exactly this process (not every whisper-cli.exe on the machine).
+    crate::queue::pids::register_pid(job_id, child.id());
 
     // whisper.cpp writes segment output to stdout and progress to stderr.
     let stderr = child.stderr.take().unwrap();
@@ -132,9 +137,20 @@ where
         emit(&ev);
     }
 
+    // If the job was cancelled (pid already killed by kill_job), surface that
+    // as the error instead of a confusing exit code.
+    if crate::queue::pids::is_cancelled(job_id) {
+        crate::queue::pids::unregister(job_id);
+        return Err("transcription cancelled".to_string());
+    }
+
     let status = child
         .wait()
         .map_err(|e| format!("Failed to wait on whisper-cli: {}", e))?;
+
+    // The job is no longer running — drop its pid / token so the registry
+    // doesn't grow without bound and cancel_job can't target a dead process.
+    crate::queue::pids::unregister(job_id);
 
     if status.success() {
         // The output file path is the argument immediately following `-of`,
@@ -164,7 +180,7 @@ pub fn run_whisper(args: &[String], duration: f64) -> Result<Vec<WhisperEvent>, 
         if let Ok(mut buf) = collected_for_cb.lock() {
             buf.push(ev.clone());
         }
-    })?;
+    }, "detect-language")?;
     let mut events = Arc::try_unwrap(collected)
         .map(|m| m.into_inner().unwrap_or_default())
         .unwrap_or_default();
@@ -182,25 +198,3 @@ pub fn detect_whisper() -> bool {
     path.exists()
 }
 
-/// Kill any running whisper-cli process. Mirrors `kill_ffmpeg()` in
-/// commands/convert.rs so a hung transcription can be cancelled the same
-/// way a hung conversion can.
-pub fn kill_whisper() -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        std::process::Command::new("taskkill")
-            .args(["/IM", "whisper-cli.exe", "/F"])
-            .output()
-            .map(|_| ())
-            .map_err(|e| format!("Failed to kill whisper-cli: {}", e))
-    }
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("pkill")
-            .arg("-9")
-            .arg("whisper-cli")
-            .output()
-            .map(|_| ())
-            .map_err(|e| format!("Failed to kill whisper-cli: {}", e))
-    }
-}

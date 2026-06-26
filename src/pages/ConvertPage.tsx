@@ -89,6 +89,9 @@ export default function ConvertPage({ onNavigate }: { onNavigate?: NavigateFn })
   const [mediaType, setMediaType] = useState<MediaType>(null);
   const [btnHover, setBtnHover] = useState(false);
   const { show } = useContextMenu();
+  // Active queue job id for the current conversion — passed to cancel_conversion
+  // so the backend can kill only this job's process (pid-scoped, not image-scoped).
+  const activeJobIdRef = useRef<string | null>(null);
 
   /* ── Batch mode state ── */
   const [inputDir, setInputDir] = useState("");
@@ -319,6 +322,7 @@ export default function ConvertPage({ onNavigate }: { onNavigate?: NavigateFn })
       const r = await invoke<{ job_id: string; output_path: string }>(
         "start_conversion", { params },
       );
+      activeJobIdRef.current = r.job_id;
       setLog((p) => [...p, `> ${r.output_path}`]);
       setLastOutputPath(r.output_path);
     } catch (e) {
@@ -327,6 +331,7 @@ export default function ConvertPage({ onNavigate }: { onNavigate?: NavigateFn })
       setError(m);
     } finally {
       setIsConverting(false);
+      activeJobIdRef.current = null;
     }
   }, [conversionParams, outputDir, mediaType, setOutputDir, setIsConverting, setError, setLastOutputPath, setConversionProgress]);
 
@@ -404,7 +409,7 @@ export default function ConvertPage({ onNavigate }: { onNavigate?: NavigateFn })
     setBatchProgress(null);
     prevDoneRef.current = skipCount;
     try {
-      await invoke("start_batch_conversion", {
+      const batchJobId = await invoke<string>("start_batch_conversion", {
         params: {
           input_dir: inputDir,
           output_dir: batchOutputDir,
@@ -413,12 +418,14 @@ export default function ConvertPage({ onNavigate }: { onNavigate?: NavigateFn })
           skip: skipCount,
         },
       });
+      activeJobIdRef.current = batchJobId;
       setBatchLog((p) => [...p, "> batch done"]);
     } catch (e) {
       setBatchError(String(e));
       setBatchLog((p) => [...p, `! ${e}`]);
     } finally {
       setBatchConverting(false);
+      activeJobIdRef.current = null;
     }
   }, [inputDir, batchOutputDir, inputExt, outputFmt, files, skipCount]);
 
@@ -536,7 +543,7 @@ export default function ConvertPage({ onNavigate }: { onNavigate?: NavigateFn })
     e.stopPropagation();
     if (!isConverting) return;
     show(e, [
-      { label: "cancel conversion", rune: "ᛏ", action: () => invoke("cancel_conversion") },
+      { label: "cancel conversion", rune: "ᛏ", action: () => invoke("cancel_conversion", { jobId: activeJobIdRef.current ?? "" }) },
       { label: `copy progress (${Math.round(conversionProgress * 100)}%)`, rune: "ᚷ", action: () => navigator.clipboard.writeText(`${Math.round(conversionProgress * 100)}%`) },
     ]);
   }, [show, isConverting, conversionProgress]);
@@ -619,7 +626,7 @@ export default function ConvertPage({ onNavigate }: { onNavigate?: NavigateFn })
     if (!batchProgress) return;
     const summary = `${batchProgress.done + batchProgress.failed} / ${batchProgress.total} files (${batchProgress.failed} failed)`;
     show(e, [
-      ...(batchConverting ? [{ label: "cancel batch", rune: "ᛏ", action: () => invoke("cancel_conversion") }] : []),
+      ...(batchConverting ? [{ label: "cancel batch", rune: "ᛏ", action: () => invoke("cancel_conversion", { jobId: activeJobIdRef.current ?? "" }) }] : []),
       { label: "copy summary", rune: "ᚷ", action: () => navigator.clipboard.writeText(summary) },
     ]);
   }, [show, batchProgress, batchConverting]);
@@ -775,7 +782,7 @@ export default function ConvertPage({ onNavigate }: { onNavigate?: NavigateFn })
               {isConverting ? "converting..." : <ScrambleText text="convert" trigger={btnHover} ticks={4} />}
             </button>
             {isConverting && (
-              <button className="btn btn-cancel" onClick={() => invoke("cancel_conversion")} title="cancel">
+              <button className="btn btn-cancel" onClick={() => invoke("cancel_conversion", { jobId: activeJobIdRef.current ?? "" })} title="cancel">
                 ■
               </button>
             )}
@@ -883,7 +890,7 @@ export default function ConvertPage({ onNavigate }: { onNavigate?: NavigateFn })
                     {batchConverting ? "converting..." : <ScrambleText text={`convert ${matchingCount} file${matchingCount !== 1 ? "s" : ""}`} trigger={convBtnHover} ticks={4} />}
                   </button>
                   {batchConverting && (
-                    <button className="btn btn-cancel" onClick={() => invoke("cancel_conversion")} title="cancel">
+                    <button className="btn btn-cancel" onClick={() => invoke("cancel_conversion", { jobId: activeJobIdRef.current ?? "" })} title="cancel">
                       ■
                     </button>
                   )}

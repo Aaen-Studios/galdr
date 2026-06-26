@@ -28,6 +28,8 @@ interface SubtitleState {
   transcriptionLog: string[];
   lastResult: TranscribeResult | null;
   error: string | null;
+  /** Queue job id for the active transcription — passed to cancel_transcription. */
+  activeJobId: string | null;
 
   load: () => Promise<void>;
   refreshModels: () => Promise<void>;
@@ -52,6 +54,7 @@ export const useSubtitleStore = create<SubtitleState>((set) => ({
   transcriptionLog: [],
   lastResult: null,
   error: null,
+  activeJobId: null,
 
   load: async () => {
     try {
@@ -112,9 +115,11 @@ export const useSubtitleStore = create<SubtitleState>((set) => ({
       transcriptionLog: ["> transcribe start"],
       error: null,
       lastResult: null,
+      activeJobId: null,
     });
     try {
       const result = await invoke<TranscribeResult>("transcribe_audio", { ...params });
+      set({ activeJobId: result.jobId });
       set((s) => ({
         transcribing: false,
         transcriptionProgress: 1,
@@ -128,17 +133,20 @@ export const useSubtitleStore = create<SubtitleState>((set) => ({
         transcribing: false,
         error: msg,
         transcriptionLog: [...s.transcriptionLog, `! ${msg}`],
+        activeJobId: null,
       }));
       return null;
     }
   },
 
   cancelTranscription: async () => {
+    const jobId = useSubtitleStore.getState().activeJobId;
     try {
-      await invoke("cancel_transcription");
+      await invoke("cancel_transcription", { jobId: jobId ?? "" });
     } catch {
       // ignore — the run will surface an error event
     }
+    set({ activeJobId: null });
   },
 
   clearError: () => set({ error: null }),

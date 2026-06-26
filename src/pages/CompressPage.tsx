@@ -118,6 +118,8 @@ export default function CompressPage({ onNavigate }: { onNavigate?: NavigateFn }
   const [isDragOver, setIsDragOver] = useState(false);
   const [btnHover, setBtnHover] = useState(false);
   const { show } = useContextMenu();
+  // Active queue job id for the current compression — passed to cancel_conversion.
+  const activeJobIdRef = useRef<string | null>(null);
 
   /* ── Batch mode state ── */
   const [inputDir, setInputDir] = useState("");
@@ -381,6 +383,7 @@ export default function CompressPage({ onNavigate }: { onNavigate?: NavigateFn }
       const r = await invoke<{ job_id: string; output_path: string }>(
         "start_conversion", { params },
       );
+      activeJobIdRef.current = r.job_id;
       setLog((p) => [...p, `> ${r.output_path}`]);
       setLastOutputPath(r.output_path);
       try {
@@ -395,6 +398,7 @@ export default function CompressPage({ onNavigate }: { onNavigate?: NavigateFn }
       setError(m);
     } finally {
       setIsConverting(false);
+      activeJobIdRef.current = null;
     }
   }, [inputPath, outputDir, mediaType, outputFormat, quality, compressionMode, targetSizeValue, targetSizeUnit, setOutputDir, setIsConverting, setError, setLastOutputPath, setConversionProgress]);
 
@@ -472,7 +476,7 @@ export default function CompressPage({ onNavigate }: { onNavigate?: NavigateFn }
     setBatchProgress(null);
     batchPrevDoneRef.current = batchSkipCount;
     try {
-      await invoke("start_batch_conversion", {
+      const batchJobId = await invoke<string>("start_batch_conversion", {
         params: {
           input_dir: inputDir,
           output_dir: batchOutputDir,
@@ -483,12 +487,14 @@ export default function CompressPage({ onNavigate }: { onNavigate?: NavigateFn }
           skip: batchSkipCount,
         },
       });
+      activeJobIdRef.current = batchJobId;
       setBatchLog((p) => [...p, "> batch compress done"]);
     } catch (e) {
       setBatchError(String(e));
       setBatchLog((p) => [...p, `! ${e}`]);
     } finally {
       setBatchConverting(false);
+      activeJobIdRef.current = null;
     }
   }, [inputDir, batchOutputDir, inputExt, outputFormat, quality, compressionMode, targetSizeValue, targetSizeUnit, batchFiles, batchSkipCount]);
 
@@ -631,7 +637,7 @@ export default function CompressPage({ onNavigate }: { onNavigate?: NavigateFn }
     e.stopPropagation();
     if (!isConverting) return;
     show(e, [
-      { label: "cancel", rune: "ᛏ", action: () => invoke("cancel_conversion") },
+      { label: "cancel", rune: "ᛏ", action: () => invoke("cancel_conversion", { jobId: activeJobIdRef.current ?? "" }) },
       { label: `copy progress (${Math.round(conversionProgress * 100)}%)`, rune: "ᚷ", action: () => navigator.clipboard.writeText(`${Math.round(conversionProgress * 100)}%`) },
     ]);
   }, [show, isConverting, conversionProgress]);
@@ -714,7 +720,7 @@ export default function CompressPage({ onNavigate }: { onNavigate?: NavigateFn }
     if (!batchProgress) return;
     const summary = `${batchProgress.done + batchProgress.failed} / ${batchProgress.total} files (${batchProgress.failed} failed)`;
     show(e, [
-      ...(batchConverting ? [{ label: "cancel batch", rune: "ᛏ", action: () => invoke("cancel_conversion") }] : []),
+      ...(batchConverting ? [{ label: "cancel batch", rune: "ᛏ", action: () => invoke("cancel_conversion", { jobId: activeJobIdRef.current ?? "" }) }] : []),
       { label: "copy summary", rune: "ᚷ", action: () => navigator.clipboard.writeText(summary) },
     ]);
   }, [show, batchProgress, batchConverting]);
@@ -919,7 +925,7 @@ export default function CompressPage({ onNavigate }: { onNavigate?: NavigateFn }
               {isConverting ? "compressing..." : <ScrambleText text={sizeIncrease ? "compress anyway" : "compress"} trigger={btnHover} ticks={4} />}
             </button>
             {isConverting && (
-              <button className="btn btn-cancel" onClick={() => invoke("cancel_conversion")} title="cancel">
+              <button className="btn btn-cancel" onClick={() => invoke("cancel_conversion", { jobId: activeJobIdRef.current ?? "" })} title="cancel">
                 ■
               </button>
             )}
@@ -1048,7 +1054,7 @@ export default function CompressPage({ onNavigate }: { onNavigate?: NavigateFn }
                     {batchConverting ? "compressing..." : <ScrambleText text={`compress ${matchingCount} file${matchingCount !== 1 ? "s" : ""}`} trigger={batchConvBtnHover} ticks={4} />}
                   </button>
                   {batchConverting && (
-                    <button className="btn btn-cancel" onClick={() => invoke("cancel_conversion")} title="cancel">
+                    <button className="btn btn-cancel" onClick={() => invoke("cancel_conversion", { jobId: activeJobIdRef.current ?? "" })} title="cancel">
                       ■
                     </button>
                   )}

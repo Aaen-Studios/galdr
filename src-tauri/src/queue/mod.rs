@@ -11,10 +11,11 @@ use uuid::Uuid;
 use crate::models::{JobEntry, JobStatus, JobType};
 
 // Re-export the cancel helpers so callers can reach them as
-// `crate::queue::cancel_token::{acquire, is_cancelled, set, release}` — a
-// friendlier name than the `pids` module they live alongside.
+// `crate::queue::cancel_token::{acquire, set}` — a friendlier name than the
+// `pids` module they live alongside. `is_cancelled` / `unregister` are used
+// directly via `crate::queue::pids::` by callers that need them.
 pub mod cancel_token {
-    pub use super::pids::{acquire_token as acquire, is_cancelled, set, unregister as release};
+    pub use super::pids::{acquire_token as acquire, set};
 }
 
 // ── Global queue state ──

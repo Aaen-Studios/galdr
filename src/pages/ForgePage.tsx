@@ -57,6 +57,8 @@ export default function ForgePage() {
   const [exportResolution, setExportResolution] = useState<"source" | "1080p" | "720p">("source");
   const [exportDest, setExportDest] = useState<string | null>(null);
   const [showRecent, setShowRecent] = useState(false);
+  // Active queue job id for the forge export — passed to cancel_forge_export.
+  const exportJobIdRef = useRef<string | null>(null);
 
   const selectedClip =
     project.videoTrack.clips.find((c) => c.selected) ||
@@ -312,7 +314,7 @@ export default function ForgePage() {
     });
 
     try {
-      const result = await invoke<string>("export_timeline", {
+      const result = await invoke<{ output_path: string; job_id: string }>("export_timeline", {
         project: {
           fps: project.fps,
           width: project.width,
@@ -329,11 +331,12 @@ export default function ForgePage() {
         },
       });
 
+      exportJobIdRef.current = result.job_id;
       unlisten();
       setExporting(false);
       setExportProgress(1);
       setExportDest(null);
-      setExportResultPath(result);
+      setExportResultPath(result.output_path);
     } catch (err: any) {
       console.error("Export failed:", err);
       unlisten();
@@ -344,10 +347,11 @@ export default function ForgePage() {
 
   const handleCancelExport = useCallback(async () => {
     try {
-      await invoke("cancel_forge_export");
+      await invoke("cancel_forge_export", { jobId: exportJobIdRef.current ?? "" });
     } catch {
       // ignore
     }
+    exportJobIdRef.current = null;
     setExporting(false);
     setExportError("Export cancelled");
     setExportDest(null);

@@ -1,7 +1,6 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use base64::Engine;
@@ -10,9 +9,6 @@ use crate::whisper::{
     self, find_model, list_models, require_installed_model, run_whisper, run_whisper_streaming,
     WhisperEvent, WhisperModel,
 };
-
-/// Cancel flag shared between the command and `cancel_transcription`.
-pub static CANCELLED_TRANSCRIPTION: AtomicBool = AtomicBool::new(false);
 
 // ── Event payloads (mirror conversion.rs) ──
 
@@ -43,6 +39,7 @@ pub struct TranscribeResult {
     pub vtt_path: Option<String>,
     pub json_path: Option<String>,
     pub output_dir: String,
+    pub job_id: String,
 }
 
 // ── Model management ──
@@ -81,10 +78,11 @@ pub async fn install_whisper_model(
     let app_for_thread = app_handle.clone();
 
     // Run the blocking download on a thread so the command stays async and
-    // the event loop can deliver progress events.
+    // the event loop can deliver progress events. A per-download cancel flag
+    // (local to this closure) replaces the old process-wide static.
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_for_thread = std::sync::Arc::clone(&cancel_flag);
     let result = tokio::task::spawn_blocking(move || -> Result<WhisperModel, String> {
-        CANCELLED_TRANSCRIPTION.store(false, Ordering::SeqCst);
-
         let mut response = reqwest::blocking::get(&model.url)
             .map_err(|e| format!("download failed: {}", e))?;
 
@@ -109,7 +107,7 @@ pub async fn install_whisper_model(
         let mut downloaded: u64 = 0;
         let mut buf = [0u8; 64 * 1024];
         loop {
-            if CANCELLED_TRANSCRIPTION.load(Ordering::SeqCst) {
+            if cancel_for_thread.load(std::sync::atomic::Ordering::SeqCst) {
                 let _ = std::fs::remove_file(&tmp_dest);
                 return Err("download cancelled".to_string());
             }
@@ -303,8 +301,6 @@ pub async fn transcribe_audio(
     output_format: String,
     output_dir: String,
 ) -> Result<TranscribeResult, String> {
-    CANCELLED_TRANSCRIPTION.store(false, Ordering::SeqCst);
-
     let input = Path::new(&input_path);
     let model_path = require_installed_model(&model_id)?;
     let wav_path = prepare_wav(input)?;
@@ -319,6 +315,7 @@ pub async fn transcribe_audio(
         input_path.clone(),
         None,
     );
+    let _ = crate::queue::cancel_token::acquire(&job_id);
 
     // Probe source duration for progress mapping.
     let duration = crate::ffmpeg::probe_file(input)
@@ -461,11 +458,12 @@ pub async fn transcribe_audio(
         WhisperEvent::Done(_) => {}
     };
 
-    let run_result = tokio::task::spawn_blocking(move || run_whisper_streaming(&args, duration, emit))
+    let job_id_for_spawn = job_id.clone();
+    let run_result = tokio::task::spawn_blocking(move || run_whisper_streaming(&args, duration, emit, &job_id_for_spawn))
         .await
         .map_err(|e| format!("transcription task panicked: {}", e))?;
 
-    if CANCELLED_TRANSCRIPTION.load(Ordering::SeqCst) {
+    if crate::queue::pids::is_cancelled(&job_id) {
         let _ = std::fs::remove_file(&wav_path);
         crate::discord_rpc::set_idle();
         crate::queue::fail(&app_handle, &job_id, "transcription cancelled".to_string());
@@ -509,6 +507,7 @@ pub async fn transcribe_audio(
         vtt_path: None,
         json_path: None,
         output_dir: output_dir.clone(),
+        job_id: job_id.clone(),
     };
 
     /// Locate the file whisper wrote for a given extension by probing the
@@ -612,9 +611,12 @@ pub async fn transcribe_audio(
 }
 
 #[tauri::command]
-pub fn cancel_transcription() -> Result<(), String> {
-    CANCELLED_TRANSCRIPTION.store(true, Ordering::SeqCst);
-    whisper::kill_whisper()
+pub fn cancel_transcription(job_id: String) -> Result<(), String> {
+    // Kill only this transcription's whisper-cli child (pid-scoped, not
+    // image-scoped) and flip only this job's cancellation token.
+    let _ = crate::queue::pids::kill_job(&job_id);
+    crate::queue::cancel_token::set(&job_id);
+    Ok(())
 }
 
 /// Convenience for the UI: surface both the catalog and the binary's
